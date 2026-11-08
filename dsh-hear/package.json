@@ -1,0 +1,45 @@
+{
+  "name": "dsh-hear",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "audio",
+    "speech",
+    "qwen-audio",
+    "listen"
+  ],
+  "type": "module",
+  "description": "Ears for the agent: hand a whole waveform to a local audio-understanding model, then verify the impression with measured pitch, energy, spectrum and pauses.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "scripts/analyze.py",
+    "scripts/split_wav.py",
+    "scripts/to_wav.py",
+    "server/hear_server.py",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}

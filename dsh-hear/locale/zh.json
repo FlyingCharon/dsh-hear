@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "鱼鱼的耳朵",
+    "description": "让 AI 听见声音：整段波形交给本地音频模型，再用基频、能量、频谱与停顿去核对它说的听感。"
+  },
+  "nav": "鱼鱼的耳朵",
+  "tabStatus": "状态",
+  "tabOptions": "选项",
+  "tabModels": "模型",
+  "tabDoctor": "诊断"
+}

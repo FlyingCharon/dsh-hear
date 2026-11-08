@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Yuyu's Ears",
+    "description": "Lets the agent hear: the whole waveform goes to a local audio model, then pitch, energy, spectrum and pauses verify what it claims to hear."
+  },
+  "nav": "Yuyu's Ears",
+  "tabStatus": "Status",
+  "tabOptions": "Options",
+  "tabModels": "Models",
+  "tabDoctor": "Diagnostics"
+}
