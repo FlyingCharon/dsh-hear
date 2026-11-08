@@ -4,6 +4,8 @@
 
 不是把声音转成文字再读——那不算听。
 
+[下载 v0.1.0](https://github.com/FlyingCharon/dsh-hear/releases/tag/v0.1.0) · [安装说明](dsh-hear/README.md) · [已知问题](dsh-hear/README.md#已知问题)
+
 ## 这个仓库里有什么
 
 | 路径 | 是什么 |
@@ -11,6 +13,7 @@
 | `dsh-hear/` | 插件本体，DSH 插件目录里装这个 |
 | `测试音频/` | 五段测试音频 + 预期答案 + 逐轮测试记录，拿来验准不准 |
 | `鱼鱼的耳朵开发规则.md` | 设计和行为规则（给人看的） |
+| `tools/` | 开发用的小工具，不随插件分发：`rollback.mjs` 存/回滚快照，`回滚.bat` 双击即用 |
 
 ## 安装
 
