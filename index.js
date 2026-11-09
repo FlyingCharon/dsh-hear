@@ -981,6 +981,29 @@ class QqWatcher {
         // 渠道看模式：对话（和先问）出声，素材默认文字；桥接上可以强制。
         const channel = batch.some((note) => replyChannelFor(note.mode, bridge, note.answer) === 'voice') ? 'voice' : 'text';
         const voiceCfg = this.getConfig().voiceReply || {};
+
+        // 首选：把听到的交给桥接，让她自己组织语言回（回复内容和语气都是她的）。
+        if (fallback.viaAgent !== false && bridge.send) {
+          const heardText = batch
+            .map((note) => String(note.answer || '').replace(/\s+/g, ' ').trim().slice(0, 180))
+            .filter(Boolean)
+            .join(' / ');
+          if (heardText) {
+            const ask = channel === 'voice' ? '这是对话，用平常的语气回我一句，能发语音就用语音。' : '这是段素材，回我一句就够了。';
+            const injected = `（我刚发了一段语音，耳朵听到的是：${heardText}）\n${ask}`;
+            try {
+              injectToBridge(injected, bridge);
+              this.lastReplyByBridge.set(key, now);
+              this.lastReplyAt = now;
+              this.lastReply = injected;
+              this.lastReplyChannel = 'agent';
+              continue;
+            } catch (error) {
+              logError('reply', `注入失败，退回自己回：${error?.message ?? error}`);
+            }
+          }
+        }
+
         const sent = [];
         for (const text of texts) {
           try {
@@ -1473,6 +1496,45 @@ async function sendQqVoice(text, channel, voiceCfg = {}) {
   const cq = `[CQ:record,file=${wav}]`;
   const result = await sendQqText(cq, channel);
   return { ...result, voice: wav, seconds: null };
+}
+
+/** 从 profile 里读到桥接自己的 botQQ（注入事件要带 self_id）。 */
+function bridgeBotQQ() {
+  for (const item of findOnebotPatchFiles()) {
+    const m = item.text.match(/^\s*botQQ:\s*'?(\d{5,})'?\s*$/m);
+    if (m) return Number(m[1]);
+  }
+  return 0;
+}
+
+/**
+ * 把一段文字注入桥接的入站队列，让它当成「他发来的一条消息」跑一轮。
+ * 这样回复由 agent 自己组织，而不是插件替她说话。
+ */
+function injectToBridge(text, bridge) {
+  const dir = bridge.mediaDir || DEFAULT_MEDIA_DIR;
+  const rawTarget = String(bridge.target || '').trim();
+  const cut = rawTarget.indexOf(':');
+  const kindRaw = cut >= 0 ? rawTarget.slice(0, cut) : '个人';
+  const id = Number(cut >= 0 ? rawTarget.slice(cut + 1) : rawTarget);
+  if (!id) throw new Error('这条桥没填发给谁');
+  const selfId = bridgeBotQQ() || Number(bridge.botQQ) || 0;
+  if (!selfId) throw new Error('读不到桥接自己的 botQQ，没法注入');
+  const event = {
+    post_type: 'message',
+    message_type: /群|group/i.test(kindRaw) ? 'group' : 'private',
+    sub_type: 'friend',
+    message_id: 900000 + Math.floor(Math.random() * 90000),
+    user_id: id,
+    self_id: selfId,
+    time: Math.floor(Date.now() / 1000),
+    raw_message: text,
+    message: [{ type: 'text', data: { text } }],
+    sender: { user_id: id, nickname: '' },
+  };
+  mkdirp(dir);
+  fs.appendFileSync(path.join(dir, 'qq-inject.jsonl'), `${JSON.stringify(event)}\n`, 'utf8');
+  return event;
 }
 
 function buildReplyTexts(notes, maxPerBatch) {
@@ -2041,6 +2103,20 @@ export function apply(ctx) {
             let writer = null;
             if (body?.writer !== false) writer = alignWriterDirs();
             return json(res, 200, { ok: true, align: result, writer, qq: watcher.status(), config: readConfig() });
+          }
+          // 试一下注入：往桥接的 qq-inject.jsonl 追加一行，看它会不会当消息跑一轮。
+          if (sub === '/qq/inject-test' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            const list = (readConfig().bridges || []).filter((b) => b && b.enabled !== false);
+            const target = body?.name ? list.find((b) => b.name === body.name) : list[0];
+            if (!target) return json(res, 200, { ok: true, result: { sent: false, reason: '没有启用的桥接' } });
+            try {
+              const text = String(body?.text || '（测试注入）这条是耳朵写进来的，收到就随便回我一句。');
+              const event = injectToBridge(text, target);
+              return json(res, 200, { ok: true, result: { sent: true, bridge: target.name || '', dir: target.mediaDir || DEFAULT_MEDIA_DIR, event } });
+            } catch (error) {
+              return json(res, 200, { ok: true, result: { sent: false, reason: String(error?.message ?? error) } });
+            }
           }
           // 直接试一条语音：验证合成 + 发语音这条链。
           if (sub === '/qq/voice-test' && req.method === 'POST') {

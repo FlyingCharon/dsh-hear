@@ -1064,6 +1064,12 @@ window.__ModuleLoader__.load({
                   key: 'on',
                   onClick: () => setDraft({ ...draft, voiceReply: { ...(draft.voiceReply || {}), enabled: draft.voiceReply?.enabled === false } }),
                 }, draft.voiceReply?.enabled === false ? '语音回复 关' : '语音回复 开'),
+                h('button', {
+                  className: 'hear-btn',
+                  key: 'agent',
+                  title: '把听到的交给 QQ 桥接，让她自己组织语言回',
+                  onClick: () => setDraft({ ...draft, reply: { ...(draft.reply || {}), viaAgent: draft.reply?.viaAgent === false } }),
+                }, draft.reply?.viaAgent === false ? '交给 agent 回：关' : '交给 agent 回：开'),
                 h('input', {
                   className: 'hear-input',
                   key: 'ep',
@@ -1081,7 +1087,7 @@ window.__ModuleLoader__.load({
                 }),
                 h('button', { className: 'hear-btn', key: 'tv', onClick: () => testVoice('') }, '试一条语音'),
               ]),
-              h('span', { className: 'hear-hint', key: 'h2' }, '判定成对话（或者拿不准先问）时用语音回，判定成素材时用文字；每条桥可以单独强制语音或文字。合成失败会自动退回文字。'),
+              h('span', { className: 'hear-hint', key: 'h2' }, '「交给 agent 回」开着时，插件把听到的内容注入 QQ 桥接，由她自己组织回复（对话用语音）；关掉才由插件自己拼一句话发。'),
             ]), '对话用声音回，素材用文字回'),
             field('冷却', slider(Math.round((draft.reply?.cooldownMs || 60000) / 1000), 10, 600, 10, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), cooldownMs: v * 1000 } }), `${Math.round((draft.reply?.cooldownMs || 60000) / 1000)} 秒`)),
             field('每批最多几条', slider(Number(draft.reply?.maxPerBatch ?? 1), 0, 10, 1, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), maxPerBatch: v } }), `${Number(draft.reply?.maxPerBatch ?? 1)} 条`), '0 表示不主动发，你一口气发几段最多回几条'),
