@@ -936,7 +936,10 @@ class QqWatcher {
       // 同一个文件重新处理时，把旧的待办换掉。
       const paths = new Set(items.map((item) => item.file));
       this.pending = this.pending.filter((row) => !paths.has(row.path));
-      this.pending = [...this.pending, ...notes.map(({ bridge, ...rest }) => rest)].slice(-10);
+      this.pending = [
+        ...this.pending,
+        ...notes.map(({ bridge, ...rest }) => ({ ...rest, bridgeName: String(bridge?.name || '') })),
+      ].slice(-10);
       mkdirp(STATE_DIR);
       fs.writeFileSync(PENDING_FILE, JSON.stringify(this.pending, null, 2), 'utf8');
 
@@ -1078,7 +1081,10 @@ class QqWatcher {
     if (rows.length) {
       parts.push([
         '最近听到的 QQ 语音（耳朵自动听的，原文在 ~/.dsh/hear/qq-pending.json）：',
-        ...rows.slice(-5).map((row) => `- ${row.at}｜${path.basename(row.path)}｜${row.error ? `没听成：${row.error}` : row.answer}`),
+        ...rows.slice(-5).map((row) => {
+          const who = row.bridgeName ? `【${row.bridgeName}】` : '【未知来源】';
+          return `- ${row.at}｜${who}${path.basename(row.path)}｜${row.error ? `没听成：${row.error}` : row.answer}`;
+        }),
       ].join('\n'));
     }
     return parts.join('\n\n');
