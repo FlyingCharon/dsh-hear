@@ -51,6 +51,8 @@ const DEFAULTS = {
   qqWatch: { enabled: true, mediaDir: '', prefix: 'media_' },
   bridges: [],
   reply: { enabled: false, provider: 'none', baseUrl: '', token: '', target: '', webhookUrl: '', cooldownMs: 60000, maxPerBatch: 1 },
+  // 对话用语音回：默认走本地 8770 的合成接口，挂了就退回文字。
+  voiceReply: { enabled: true, endpoint: 'http://127.0.0.1:8770/v1/speak/file', voice: 'shou', maxChars: 120, timeoutMs: 120000 },
   cleanupReminder: { enabled: true, intervalDays: 2, hour: 22, lastAskedAt: '' },
   onboarded: false,
   cloud: { provider: 'none', baseUrl: '', apiKey: '', model: '' },
@@ -104,6 +106,7 @@ function readConfig() {
     cloud: { ...DEFAULTS.cloud, ...(raw.cloud || {}) },
     qqWatch: { ...DEFAULTS.qqWatch, ...(raw.qqWatch || {}) },
     reply: { ...DEFAULTS.reply, ...(raw.reply || {}) },
+    voiceReply: { ...DEFAULTS.voiceReply, ...(raw.voiceReply || {}) },
     cleanupReminder: { ...DEFAULTS.cleanupReminder, ...(raw.cleanupReminder || {}) },
   };
   // 老配置里的「先关 IndexTTS」已经去掉，统一落到先关语音合成。
@@ -887,7 +890,16 @@ class QqWatcher {
         try {
           const heard = await this.getEars().hear(item.file, '这是 QQ 里发来的一段语音。请用中文说说：说了什么、语气情绪、语速停顿、背景干不干净。');
           const parsed = parseAnswer(heard.answer);
-          notes.push({ at: new Date().toISOString(), path: item.file, bridge: item.bridge, ...parsed });
+          // 对话还是素材，在听完之后定：这段决定回复走语音还是走文字。
+          const decided = resolveMode(this.getConfig(), duration, parsed.answer, '');
+          notes.push({
+            at: new Date().toISOString(),
+            path: item.file,
+            bridge: item.bridge,
+            mode: decided.mode,
+            modeNote: decided.note,
+            ...parsed,
+          });
         } catch (error) {
           notes.push({ at: new Date().toISOString(), path: item.file, bridge: item.bridge, error: String(error?.message ?? error) });
         }
@@ -909,12 +921,18 @@ class QqWatcher {
         askGroups.get(bridge).push(question.text);
       }
       for (const [bridge, texts] of askGroups) {
+        const voiceCfg = this.getConfig().voiceReply || {};
+        const useVoice = bridge.replyMode !== 'text' && voiceCfg.enabled !== false;
         for (const text of texts.slice(0, 3)) {
           try {
-            await sendQqText(text, bridge);
+            if (useVoice) await sendQqVoice(text, bridge, voiceCfg);
+            else await sendQqText(text, bridge);
             await new Promise((r) => setTimeout(r, 600));
           } catch (error) {
             logError('reply', error?.message ?? error);
+            try {
+              await sendQqText(text, bridge);
+            } catch {}
             break;
           }
         }
@@ -935,14 +953,30 @@ class QqWatcher {
         const cooldown = Number(bridge.cooldownMs ?? fallback.cooldownMs ?? 60000) || 60000;
         if (now - (this.lastReplyByBridge.get(key) || 0) < cooldown) continue;
         const texts = buildReplyTexts(batch, bridge.maxPerBatch ?? fallback.maxPerBatch ?? 1);
+        // 渠道看模式：对话（和先问）出声，素材默认文字；桥接上可以强制。
+        const channel = batch.some((note) => replyChannelFor(note.mode, bridge, note.answer) === 'voice') ? 'voice' : 'text';
+        const voiceCfg = this.getConfig().voiceReply || {};
         const sent = [];
         for (const text of texts) {
           try {
-            await sendQqText(text, bridge);
+            if (channel === 'voice' && voiceCfg.enabled !== false) {
+              await sendQqVoice(text, bridge, voiceCfg);
+            } else {
+              await sendQqText(text, bridge);
+            }
             sent.push(text);
             await new Promise((r) => setTimeout(r, 800));
           } catch (error) {
             logError('reply', error?.message ?? error);
+            // 语音这条挂了就退回文字，别让对方啥也收不到。
+            if (channel === 'voice') {
+              try {
+                await sendQqText(`${text}（语音没发出去）`, bridge);
+                sent.push(text);
+              } catch (fallbackError) {
+                logError('reply', fallbackError?.message ?? fallbackError);
+              }
+            }
             break;
           }
         }
@@ -950,6 +984,7 @@ class QqWatcher {
           this.lastReplyByBridge.set(key, now);
           this.lastReplyAt = now;
           this.lastReply = sent.join(' / ');
+          this.lastReplyChannel = channel;
         }
       }
     } finally {
@@ -970,6 +1005,7 @@ class QqWatcher {
       conflicts: this.conflicts || [],
       lastReplyAt: this.lastReplyAt || null,
       lastReply: this.lastReply || '',
+      lastReplyChannel: this.lastReplyChannel || '',
       busy: this.busy,
     };
   }
@@ -1263,6 +1299,39 @@ async function sendQqText(text, channel) {
   return { sent: true, provider: 'onebot' };
 }
 
+/** 一句话变一段 wav：走本地语音合成（默认 8770 的 /v1/speak/file）。 */
+async function speakText(text, voiceCfg = {}) {
+  const endpoint = String(voiceCfg.endpoint || 'http://127.0.0.1:8770/v1/speak/file');
+  const voice = String(voiceCfg.voice || 'shou');
+  const maxChars = Math.max(10, Math.min(300, Number(voiceCfg.maxChars) || 120));
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+  if (!clean) throw new Error('没有要念的字');
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: clean, voice, format: 'wav' }),
+    signal: AbortSignal.timeout(Number(voiceCfg.timeoutMs) || 120000),
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => '');
+    throw new Error(`语音合成失败 ${res.status}：${raw.slice(0, 160)}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length < 1024) throw new Error('语音合成返回的数据太小，可能没出声');
+  mkdirp(path.join(STATE_DIR, 'voice'));
+  const out = path.join(STATE_DIR, 'voice', `reply-${Date.now()}.wav`);
+  fs.writeFileSync(out, buf);
+  return out;
+}
+
+/** 用语音回一条：先合成，再当 QQ 语音发出去。 */
+async function sendQqVoice(text, channel, voiceCfg = {}) {
+  const wav = await speakText(text, voiceCfg);
+  const cq = `[CQ:record,file=${wav}]`;
+  const result = await sendQqText(cq, channel);
+  return { ...result, voice: wav, seconds: null };
+}
+
 function buildReplyTexts(notes, maxPerBatch) {
   const limit = Math.max(0, Math.min(10, Number(maxPerBatch) || 0));
   if (limit === 0) return [];
@@ -1427,6 +1496,37 @@ function decideMode(judgeMode, durationS, question) {
   if (durationS <= 20) return { mode: 'dialog', note: '当对话听' };
   if (durationS >= 60) return { mode: 'material', note: '当素材收了（超过一分钟，整段听可能漏细节）' };
   return { mode: 'ask', note: '拿不准，先问一句：这是你在跟我说话，还是让我听东西' };
+}
+
+/**
+ * 时长先给个初判，再用模型听到的内容修正：
+ * 里面说的是「你听听这个」→ 素材；它自己都说判断不出意图 → 先问。
+ * 手动模式（一律对话/一律素材/每次先问）不参与修正。
+ */
+function resolveMode(cfg, durationS, answer, question) {
+  const base = decideMode(cfg.judgeMode, durationS, question);
+  let mode = base.mode;
+  let note = base.note;
+  const text = String(answer || '');
+  if (mode === 'dialog' && /你听听|听听这个|听一下这个|你听一下/.test(text)) {
+    mode = 'material';
+    note = '当素材收了（里面是让我听东西，不是问话）';
+  }
+  if (mode !== 'ask' && cfg.judgeMode === 'auto'
+    && /(无法确定|无法判断|不能确定|不确定|不清楚|拿不准|分不清|看不出来)[^。\n]{0,15}(意图|目的|是跟我说话|冲我说话|对话还是)/.test(text)) {
+    mode = 'ask';
+    note = '拿不准，先问一句：这是你在跟我说话，还是让我听东西';
+  }
+  return { mode, note };
+}
+
+/** 这段该用语音回还是用文字回：对话和先问都出声，素材默认文字。 */
+function replyChannelFor(mode, bridge, text) {
+  const forced = String(bridge?.replyMode || 'auto');
+  if (forced === 'voice') return 'voice';
+  if (forced === 'text') return 'text';
+  if (/用语音回|语音回我|说给我听|用声音回/.test(String(text || ''))) return 'voice';
+  return mode === 'material' ? 'text' : 'voice';
 }
 
 function splitAudio(file, seconds = 60) {
@@ -1762,7 +1862,21 @@ export function apply(ctx) {
             watcher.start();
             return json(res, 200, { ok: true, qq: watcher.status() });
           }
-          // 试一下某条桥到底发不发得出去：这是「回复没接上」最直接的验证。
+          // 直接试一条语音：验证合成 + 发语音这条链。
+          if (sub === '/qq/voice-test' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            const cfg = readConfig();
+            const list = (cfg.bridges || []).filter((b) => b && b.enabled !== false);
+            const target = body?.name ? list.find((b) => b.name === body.name) : list[0];
+            if (!target) return json(res, 200, { ok: true, result: { sent: false, reason: '没有启用的桥接' } });
+            try {
+              const text = String(body?.text || '这是耳朵的语音回复，听得到吗');
+              const out = await sendQqVoice(text, target, cfg.voiceReply || {});
+              return json(res, 200, { ok: true, result: { sent: true, bridge: target.name || '', to: target.target, file: out.voice } });
+            } catch (error) {
+              return json(res, 200, { ok: true, result: { sent: false, reason: String(error?.message ?? error) } });
+            }
+          }
           if (sub === '/qq/test' && req.method === 'POST') {
             const body = await readBody(req).catch(() => ({}));
             const list = (readConfig().bridges || []).filter((b) => b && b.enabled !== false);
@@ -1882,20 +1996,11 @@ export function apply(ctx) {
           result = { ...single, segments: 1 };
         }
 
-        let finalMode = mode;
-        let finalNote = note;
-        // 短音频里说的是「你听听这个」这种，多半是素材，不该当问话。
-        if (finalMode === 'dialog' && /你听听|听听这个|听一下这个|你听一下/.test(String(result.answer))) {
-          finalMode = 'material';
-          finalNote = '当素材收了（里面是让我听东西，不是问话）';
-        }
-        // 它自己都说判断不出意图，就别替它下结论，先问一句。
-        // 只看「意图/目的」这类说法，别把「总情绪：不确定」也算进来。
-        if (finalMode !== 'ask' && cfg.judgeMode === 'auto'
-          && /(无法确定|无法判断|不能确定|不确定|不清楚|拿不准|分不清|看不出来)[^。\n]{0,15}(意图|目的|是跟我说话|冲我说话|对话还是)/.test(String(result.answer))) {
-          finalMode = 'ask';
-          finalNote = '拿不准，先问一句：这是你在跟我说话，还是让我听东西';
-        }
+        // 时长初判 + 听到的内容修正，两边用同一段逻辑。
+        const decided = resolveMode(cfg, duration, result.answer, args.question);
+        const finalMode = decided.mode;
+        const finalNote = decided.note;
+        const finalChannel = replyChannelFor(finalMode, null, args.question);
 
         const record = {
           at: new Date().toISOString(),
@@ -1905,6 +2010,7 @@ export function apply(ctx) {
           raw: result.answer,
           mode: finalMode,
           modeNote: finalNote,
+          channel: finalChannel,
           emotion: extractEmotion(result.answer),
           consistency: checkEmotion(extractEmotion(result.answer), features),
           answer: result.answer,

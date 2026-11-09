@@ -731,6 +731,16 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const testVoice = async (name) => {
+        try {
+          const data = await api('/qq/voice-test', { method: 'POST', body: { name } });
+          const r = data.result || {};
+          setToast(r.sent ? `${name || '这条桥'}的语音发出去了` : `语音没发出去：${r.reason || '原因不明'}`);
+        } catch (error) {
+          setBanner(String(error.message || error));
+        }
+      };
+
       const openModelPage = (m) => {
         try {
           window.open(`https://www.modelscope.cn/models/${m.id}`, '_blank', 'noopener');
@@ -992,7 +1002,17 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'hear-row', key: 'r4', style: { marginTop: '6px' } }, [
                   h('input', { className: 'hear-input', placeholder: '例如 个人:10001 或 群组:123456', value: bridge.target || '', onChange: (e) => updateBridge(index, { target: e.target.value }) }),
                   h('button', { className: 'hear-btn', key: 's', onClick: () => updateBridge(index, { send: !bridge.send }) }, bridge.send ? '主动回复 开' : '主动回复 关'),
-                  h('button', { className: 'hear-btn', key: 'x', onClick: () => testBridge(bridge.name || '') }, '试发'),
+                  h('button', {
+                    className: 'hear-btn',
+                    key: 'm',
+                    onClick: () => {
+                      const cur = bridge.replyMode || 'auto';
+                      const next = cur === 'auto' ? 'voice' : cur === 'voice' ? 'text' : 'auto';
+                      updateBridge(index, { replyMode: next });
+                    },
+                  }, `回复方式：${({ auto: '自动', voice: '语音', text: '文字' })[bridge.replyMode || 'auto']}`),
+                  h('button', { className: 'hear-btn', key: 'x', onClick: () => testBridge(bridge.name || '') }, '试发文字'),
+                  h('button', { className: 'hear-btn', key: 'v', onClick: () => testVoice(bridge.name || '') }, '试发语音'),
                 ]),
                 (qq?.conflicts || []).some((c) => c.bridges?.includes(bridge.name)) ? h('div', {
                   key: 'cf',
@@ -1006,6 +1026,32 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'hear-hint', key: 'h' }, '一条管一个号，各自听各自的，先保存再试'),
               ]),
             ]), '多开几个 QQ 就多加几条，互不打架'),
+            field('语音回复', h('div', null, [
+              h('div', { className: 'hear-row', key: 'v1' }, [
+                h('button', {
+                  className: 'hear-btn',
+                  key: 'on',
+                  onClick: () => setDraft({ ...draft, voiceReply: { ...(draft.voiceReply || {}), enabled: draft.voiceReply?.enabled === false } }),
+                }, draft.voiceReply?.enabled === false ? '语音回复 关' : '语音回复 开'),
+                h('input', {
+                  className: 'hear-input',
+                  key: 'ep',
+                  placeholder: '合成接口，例如 http://127.0.0.1:8770/v1/speak/file',
+                  value: draft.voiceReply?.endpoint || '',
+                  onChange: (e) => setDraft({ ...draft, voiceReply: { ...(draft.voiceReply || {}), endpoint: e.target.value } }),
+                }),
+                h('input', {
+                  className: 'hear-input',
+                  key: 'vc',
+                  style: { maxWidth: '120px' },
+                  placeholder: '音色，例如 shou',
+                  value: draft.voiceReply?.voice || '',
+                  onChange: (e) => setDraft({ ...draft, voiceReply: { ...(draft.voiceReply || {}), voice: e.target.value } }),
+                }),
+                h('button', { className: 'hear-btn', key: 'tv', onClick: () => testVoice('') }, '试一条语音'),
+              ]),
+              h('span', { className: 'hear-hint', key: 'h2' }, '判定成对话（或者拿不准先问）时用语音回，判定成素材时用文字；每条桥可以单独强制语音或文字。合成失败会自动退回文字。'),
+            ]), '对话用声音回，素材用文字回'),
             field('冷却', slider(Math.round((draft.reply?.cooldownMs || 60000) / 1000), 10, 600, 10, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), cooldownMs: v * 1000 } }), `${Math.round((draft.reply?.cooldownMs || 60000) / 1000)} 秒`)),
             field('每批最多几条', slider(Number(draft.reply?.maxPerBatch ?? 1), 0, 10, 1, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), maxPerBatch: v } }), `${Number(draft.reply?.maxPerBatch ?? 1)} 条`), '0 表示不主动发，你一口气发几段最多回几条'),
             field(t('vramPrio'), select(draft.vramPriority === 'indextts' ? 'voice' : draft.vramPriority, [['voice', t('prioVoice')], ['last', t('prioLast')]], (v) => setDraft({ ...draft, vramPriority: v }))),
