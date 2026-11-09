@@ -1180,6 +1180,56 @@ function zombieNotice(cfg = readConfig(), ownedPid = 0, phase = '') {
   return value;
 }
 
+/** 一键对齐桥接的语音目录：清隐形字符、补默认值、缺目录就建。 */
+function alignBridgeDirs() {
+  const cfg = readConfig();
+  const list = Array.isArray(cfg.bridges) ? cfg.bridges : [];
+  const invisible = /[\u200e\u200f\u202a-\u202e\u2066-\u2069\u00a0\u3000]/g;
+  const created = [];
+  const cleaned = [];
+  const bridges = list.map((b) => {
+    const dirRaw = String(b.mediaDir || '').replace(invisible, '').trim();
+    const nameRaw = String(b.name || '').replace(invisible, '').trim();
+    const prefixRaw = String(b.prefix ?? '').replace(invisible, '').trim();
+    const dir = dirRaw || DEFAULT_MEDIA_DIR;
+    const prefix = prefixRaw || 'media_';
+    if (dirRaw !== String(b.mediaDir || '').trim() || prefixRaw !== String(b.prefix ?? '').trim()) {
+      cleaned.push(nameRaw || '(未命名)');
+    }
+    if (!fs.existsSync(dir)) {
+      mkdirp(dir);
+      created.push(dir);
+    }
+    return { ...b, name: nameRaw, mediaDir: dir, prefix };
+  });
+
+  // 同目录同前缀 = 只有第一条收得到，算出来告诉人。
+  const byKey = new Map();
+  for (const b of bridges) {
+    if (b.enabled === false) continue;
+    const key = `${path.resolve(b.mediaDir)}|${String(b.prefix).toLowerCase()}`;
+    if (!byKey.has(key)) byKey.set(key, { dir: b.mediaDir, prefix: b.prefix, names: [] });
+    byKey.get(key).names.push(b.name || '未命名');
+  }
+  const conflicts = [];
+  for (const item of byKey.values()) {
+    if (item.names.length < 2) continue;
+    conflicts.push({
+      ...item,
+      text: `桥接冲突：${item.names.join(' 和 ')} 都盯 ${item.dir}，前缀都是「${item.prefix}」，文件只会被第一条取走`,
+    });
+  }
+
+  writeConfig({ bridges });
+  return {
+    changed: cleaned.length > 0 || created.length > 0,
+    created,
+    cleaned,
+    conflicts,
+    bridges: bridges.map((b) => ({ name: b.name, mediaDir: b.mediaDir, prefix: b.prefix, exists: fs.existsSync(b.mediaDir) })),
+  };
+}
+
 function cleanupStatus() {  const cfg = readConfig();
   const rule = cfg.cleanupReminder || {};
   const next = nextCleanupAt(cfg);
@@ -1861,6 +1911,12 @@ export function apply(ctx) {
           if (sub === '/qq/restart' && req.method === 'POST') {
             watcher.start();
             return json(res, 200, { ok: true, qq: watcher.status() });
+          }
+          // 一键对齐：清隐形字符、补默认目录、缺的就建，然后重启监听。
+          if (sub === '/qq/align' && req.method === 'POST') {
+            const result = alignBridgeDirs();
+            watcher.start();
+            return json(res, 200, { ok: true, align: result, qq: watcher.status(), config: readConfig() });
           }
           // 直接试一条语音：验证合成 + 发语音这条链。
           if (sub === '/qq/voice-test' && req.method === 'POST') {

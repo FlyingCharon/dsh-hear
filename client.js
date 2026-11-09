@@ -741,6 +741,28 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 一键对齐：清掉复制带进来的隐形字符、补默认目录、缺目录直接建。
+      const alignDirs = async () => {
+        setBusy('align');
+        try {
+          const data = await api('/qq/align', { method: 'POST', body: {} });
+          const a = data.align || {};
+          if (data.config) {
+            setConfig(data.config);
+            setDraft(padBridges(data.config));
+          }
+          const bits = [];
+          if (a.created?.length) bits.push(`建了 ${a.created.length} 个目录`);
+          if (a.cleaned?.length) bits.push(`清了 ${a.cleaned.length} 条里的隐形字符`);
+          if (a.conflicts?.length) bits.push(`还有 ${a.conflicts.length} 处冲突`);
+          setToast(bits.length ? bits.join('，') : '目录都已经对齐了，没要动的');
+        } catch (error) {
+          setBanner(String(error.message || error));
+        } finally {
+          setBusy('');
+        }
+      };
+
       const openModelPage = (m) => {
         try {
           window.open(`https://www.modelscope.cn/models/${m.id}`, '_blank', 'noopener');
@@ -1022,6 +1044,7 @@ window.__ModuleLoader__.load({
               ])),
               h('div', { className: 'hear-row', key: 'add' }, [
                 h('button', { className: 'hear-btn', onClick: addBridge }, '添加一个桥接'),
+                h('button', { className: 'hear-btn primary', disabled: busy === 'align', onClick: alignDirs }, busy === 'align' ? '对齐中…' : '一键对齐目录'),
                 h('button', { className: 'hear-btn', onClick: testReply }, '发一条试试'),
                 h('span', { className: 'hear-hint', key: 'h' }, '一条管一个号，各自听各自的，先保存再试'),
               ]),
