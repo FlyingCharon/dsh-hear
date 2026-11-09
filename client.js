@@ -311,6 +311,7 @@ window.__ModuleLoader__.load({
       const [errors, setErrors] = useState([]);
       const [toast, setToast] = useState('');
       const alive = useRef(true);
+      const retryRef = useRef(0);
 
       const dirty = Boolean(draft && config && JSON.stringify(draft) !== JSON.stringify(config));
 
@@ -318,6 +319,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await api('/status');
           if (!alive.current) return;
+          retryRef.current = 0;
           setStatus(data.status);
           setQq(data.qq || null);
           setCleanup(data.cleanup || null);
@@ -327,11 +329,22 @@ window.__ModuleLoader__.load({
           if (errs && alive.current) setErrors(errs.errors || []);
         } catch (error) {
           const msg = String(error.message || error);
-          if (alive.current) {
-            setBanner(msg.includes('404')
-              ? '插件后台没挂上：去 设置 → 插件 把「鱼鱼的耳朵」关掉再打开一次'
-              : msg);
+          if (!alive.current) return;
+          if (msg.includes('404')) {
+            // 宿主刚重启或插件刚重载时后台会短暂 404，先自己重试一会儿，别直接报红。
+            retryRef.current += 1;
+            const tries = retryRef.current;
+            if (tries <= 8) {
+              setBanner(`插件后台还没挂上，正在重连（第 ${tries} 次）…`);
+              setTimeout(() => {
+                if (alive.current) refresh();
+              }, 2500);
+              return;
+            }
+            setBanner('插件后台没挂上：去 设置 → 插件 把「鱼鱼的耳朵」关掉再打开一次');
+            return;
           }
+          setBanner(msg);
         }
       }, []);
 
@@ -707,6 +720,17 @@ window.__ModuleLoader__.load({
         }
       };
 
+      // 逐条桥接试发：回复没接上时，先看是哪条桥发不出去。
+      const testBridge = async (name) => {
+        try {
+          const data = await api('/qq/test', { method: 'POST', body: { name } });
+          const r = data.result || {};
+          setToast(r.sent ? `${name || '这条桥'}发出去了，看手机收没收到` : `${name || '这条桥'}没发出去：${r.reason || '原因不明'}`);
+        } catch (error) {
+          setBanner(String(error.message || error));
+        }
+      };
+
       const openModelPage = (m) => {
         try {
           window.open(`https://www.modelscope.cn/models/${m.id}`, '_blank', 'noopener');
@@ -842,6 +866,17 @@ window.__ModuleLoader__.load({
             h('button', { className: 'hear-btn', key: 's', onClick: switchPort }, `换到 ${portInfo.suggestion || '空闲端口'}`),
             h('button', { className: 'hear-btn', key: 'd', onClick: () => setDismissedPid(portInfo.pid) }, '先不管'),
           ]) : null,
+          (qq?.conflicts || []).length ? h('div', {
+            className: 'hear-banner',
+            key: 'qqconflict',
+            style: {
+              borderColor: 'var(--dsw-alias-state-warn-primary)',
+              color: 'var(--dsw-alias-state-warn-primary)',
+              background: 'rgba(255,170,0,.12)',
+              cursor: 'pointer',
+            },
+            onClick: () => setTab('options'),
+          }, `${qq.conflicts[0].text}（点这里去改）`) : null,
           cleanup?.due ? h('div', {
             className: 'hear-banner',
             key: 'cleanup',
@@ -957,7 +992,13 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'hear-row', key: 'r4', style: { marginTop: '6px' } }, [
                   h('input', { className: 'hear-input', placeholder: '例如 个人:10001 或 群组:123456', value: bridge.target || '', onChange: (e) => updateBridge(index, { target: e.target.value }) }),
                   h('button', { className: 'hear-btn', key: 's', onClick: () => updateBridge(index, { send: !bridge.send }) }, bridge.send ? '主动回复 开' : '主动回复 关'),
+                  h('button', { className: 'hear-btn', key: 'x', onClick: () => testBridge(bridge.name || '') }, '试发'),
                 ]),
+                (qq?.conflicts || []).some((c) => c.bridges?.includes(bridge.name)) ? h('div', {
+                  key: 'cf',
+                  className: 'hear-hint',
+                  style: { color: 'var(--dsw-alias-state-warn-primary)', marginTop: '6px' },
+                }, '这条桥跟别人共用同一个目录和前缀，文件只会被第一条取走') : null,
               ])),
               h('div', { className: 'hear-row', key: 'add' }, [
                 h('button', { className: 'hear-btn', onClick: addBridge }, '添加一个桥接'),

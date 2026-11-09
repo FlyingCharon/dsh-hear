@@ -87,7 +87,10 @@ function mkdirp(dir) {
 
 function readJson(file, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    let text = fs.readFileSync(file, 'utf8');
+    // 有的编辑器/脚本会写 BOM，JSON.parse 见到就直接抛，配置会被静默当成空的。
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    return JSON.parse(text);
   } catch {
     return fallback;
   }
@@ -753,6 +756,7 @@ class QqWatcher {
     this.listening = false;
     this.dir = '';
     this.lastError = '';
+    this.conflicts = [];
     this.lastSeen = 0;
     this.busy = false;
     this.pending = readJson(PENDING_FILE, []) || [];
@@ -765,12 +769,32 @@ class QqWatcher {
 
   start() {
     this.stop();
+    this.conflicts = [];
     if (!this.bridges.length) return;
     const byDir = new Map();
     for (const bridge of this.bridges) {
       const dir = bridge.mediaDir || DEFAULT_MEDIA_DIR;
       if (!byDir.has(dir)) byDir.set(dir, []);
       byDir.get(dir).push(bridge);
+    }
+    // 同一个目录 + 同一个前缀的两条桥，文件名里没有账号信息，只会被第一条取走。
+    for (const [dir, list] of byDir) {
+      const byPrefix = new Map();
+      for (const bridge of list) {
+        const prefix = String(bridge.prefix ?? 'media_').toLowerCase();
+        const key = prefix === '*' ? '(全部)' : prefix;
+        if (!byPrefix.has(key)) byPrefix.set(key, []);
+        byPrefix.get(key).push(bridge.name || bridge.baseUrl || '未命名');
+      }
+      for (const [prefix, names] of byPrefix) {
+        if (names.length < 2) continue;
+        this.conflicts.push({
+          dir,
+          prefix,
+          bridges: names,
+          text: `桥接冲突：${names.join(' 和 ')} 都盯 ${dir}，前缀都是「${prefix}」，文件里没有账号信息，只会被第一条取走，后面那条永远收不到。给每条桥配自己的目录或前缀。`,
+        });
+      }
     }
     const dirs = [];
     for (const [dir, list] of byDir) {
@@ -943,6 +967,7 @@ class QqWatcher {
       lastSeen: this.lastSeen || null,
       pending: this.pending.length,
       lastError: this.lastError,
+      conflicts: this.conflicts || [],
       lastReplyAt: this.lastReplyAt || null,
       lastReply: this.lastReply || '',
       busy: this.busy,
@@ -950,13 +975,17 @@ class QqWatcher {
   }
 
   contextText() {
+    const parts = [];
+    for (const row of this.conflicts || []) parts.push(row.text);
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
     const rows = this.pending.filter((row) => Date.parse(row.at) > cutoff);
-    if (!rows.length) return '';
-    return [
-      '最近听到的 QQ 语音（耳朵自动听的，原文在 ~/.dsh/hear/qq-pending.json）：',
-      ...rows.slice(-5).map((row) => `- ${row.at}｜${path.basename(row.path)}｜${row.error ? `没听成：${row.error}` : row.answer}`),
-    ].join('\n');
+    if (rows.length) {
+      parts.push([
+        '最近听到的 QQ 语音（耳朵自动听的，原文在 ~/.dsh/hear/qq-pending.json）：',
+        ...rows.slice(-5).map((row) => `- ${row.at}｜${path.basename(row.path)}｜${row.error ? `没听成：${row.error}` : row.answer}`),
+      ].join('\n'));
+    }
+    return parts.join('\n\n');
   }
 
   forget(file) {
@@ -1733,6 +1762,21 @@ export function apply(ctx) {
             watcher.start();
             return json(res, 200, { ok: true, qq: watcher.status() });
           }
+          // 试一下某条桥到底发不发得出去：这是「回复没接上」最直接的验证。
+          if (sub === '/qq/test' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            const list = (readConfig().bridges || []).filter((b) => b && b.enabled !== false);
+            const target = body?.name ? list.find((b) => b.name === body.name) : list[0];
+            if (!target) return json(res, 200, { ok: true, result: { sent: false, reason: '没有启用的桥接' } });
+            if (!target.baseUrl) return json(res, 200, { ok: true, result: { sent: false, reason: `${target.name || '这条桥'}没填 OneBot 地址，发不出去` } });
+            if (!target.target) return json(res, 200, { ok: true, result: { sent: false, reason: `${target.name || '这条桥'}没填发给谁` } });
+            try {
+              await sendQqText(String(body?.text || '耳朵试一条，能收到吗'), target);
+              return json(res, 200, { ok: true, result: { sent: true, bridge: target.name || '', to: target.target } });
+            } catch (error) {
+              return json(res, 200, { ok: true, result: { sent: false, reason: String(error?.message ?? error) } });
+            }
+          }
           if (sub === '/client-error' && req.method === 'POST') {
             const body = await readBody(req);
             logError('client', String(body?.message ?? 'unknown'), body?.stack);
@@ -1945,14 +1989,20 @@ export function apply(ctx) {
       name: 'dsh-hear-qq',
       order: 55,
       text: () => {
-        const parts = [watcher.contextText(), rulesText()];
-        const zombie = zombieNotice(readConfig(), ears.pid || 0, ears.phase);
-        if (zombie) parts.push(zombie);
-        const cleanup = cleanupStatus();
-        if (cleanup.due) {
-          parts.push(`清理提醒：这两天有 ${cleanup.voices} 个语音文件、${cleanup.records} 条听音记录、${cleanup.temps} 份切段临时文件（约 ${formatSize(cleanup.bytes)}）。该问主人一次要不要清掉，他说清再删，没说清就一条都别动。`);
+        // 这一段每一轮都会跑，里面任何一处抛错都会把整轮 agent 带崩，所以兜住。
+        try {
+          const parts = [watcher.contextText(), rulesText()];
+          const zombie = zombieNotice(readConfig(), ears.pid || 0, ears.phase);
+          if (zombie) parts.push(zombie);
+          const cleanup = cleanupStatus();
+          if (cleanup.due) {
+            parts.push(`清理提醒：这两天有 ${cleanup.voices} 个语音文件、${cleanup.records} 条听音记录、${cleanup.temps} 份切段临时文件（约 ${formatSize(cleanup.bytes)}）。该问主人一次要不要清掉，他说清再删，没说清就一条都别动。`);
+          }
+          return parts.filter(Boolean).join('\n\n');
+        } catch (error) {
+          logError('prompt', String(error?.message ?? error));
+          return '';
         }
-        return parts.filter(Boolean).join('\n\n');
       },
     }));
   }
