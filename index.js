@@ -992,8 +992,17 @@ class QqWatcher {
             .filter(Boolean)
             .join(' / ');
           if (heardText) {
-            const ask = channel === 'voice' ? '这是对话，用平常的语气回我一句，能发语音就用语音。' : '这是段素材，回我一句就够了。';
-            const injected = `（我刚发了一段语音，耳朵听到的是：${heardText}）\n${ask}`;
+            // 注入的措辞决定她会不会用嘴回：对话必须写死「用语音」，含糊一句她就会打字。
+            const voicePrompt = String(
+              fallback.voicePrompt
+              || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是对话，不是素材。用你平常的样子回我，并且**必须用语音回**——调用语音工具（qq_send_voice）把话说成语音发出来，不要只打字。',
+            );
+            const materialPrompt = String(
+              fallback.materialPrompt
+              || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是段素材，不用回语音，一句话确认就行。',
+            );
+            const tpl = channel === 'voice' ? voicePrompt : materialPrompt;
+            const injected = tpl.replace(/\{heard\}/g, heardText);
             try {
               injectToBridge(injected, bridge);
               this.lastReplyByBridge.set(key, now);
