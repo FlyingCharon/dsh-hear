@@ -23,9 +23,9 @@ const HOME = process.env.USERPROFILE || process.env.HOME || '';
 
 // 要跟着回滚走的东西：插件源码 + 测试口径 + 那个唯一的配置
 const TARGETS = [
-  { src: path.join(ROOT, 'dsh-hear', 'index.js'), rel: 'dsh-hear/index.js' },
-  { src: path.join(ROOT, 'dsh-hear', 'client.js'), rel: 'dsh-hear/client.js' },
-  { src: path.join(ROOT, 'dsh-hear', 'package.json'), rel: 'dsh-hear/package.json' },
+  { src: path.join(ROOT, 'index.js'), rel: 'index.js' },
+  { src: path.join(ROOT, 'client.js'), rel: 'client.js' },
+  { src: path.join(ROOT, 'package.json'), rel: 'package.json' },
   { src: path.join(ROOT, '测试音频', '测试记录.md'), rel: '测试音频/测试记录.md' },
   { src: path.join(ROOT, '测试音频', '预期.md'), rel: '测试音频/预期.md' },
   { src: path.join(HOME, '.dsh', 'hear', 'config.json'), rel: 'external/hear-config.json' },
@@ -158,7 +158,7 @@ function diff(arg) {
 }
 
 function check() {
-  const js = [path.join(ROOT, 'dsh-hear', 'index.js'), path.join(ROOT, 'dsh-hear', 'client.js')];
+  const js = [path.join(ROOT, 'index.js'), path.join(ROOT, 'client.js')];
   let bad = 0;
   for (const file of js) {
     if (!fs.existsSync(file)) {

@@ -454,6 +454,14 @@ class EarsService {
       this.portMoved = { from, to: free };
       logError('service', `端口 ${from} 被占用，已改用 ${free}`);
     }
+    // 配置里记的脚本路径可能指向旧的安装位置（插件挪过目录），脚本还在自带目录里就用自带的。
+    if (!fs.existsSync(cfg.serviceScript)) {
+      const bundled = path.join(HERE, 'server', 'hear_server.py');
+      if (fs.existsSync(bundled)) {
+        writeConfig({ serviceScript: bundled });
+        cfg = this.cfg;
+      }
+    }
     if (!fs.existsSync(cfg.serviceScript)) {
       this.error = `服务脚本不存在：${cfg.serviceScript}`;
       this.phase = 'error';
