@@ -1834,15 +1834,41 @@ export function apply(ctx) {
           if (sub === '/update/check' && req.method === 'GET') {
             let latest = null;
             let hasUpdate = false;
+            let source = '';
+            // 先看 npm；没发 npm 就退到 GitHub 的 latest release，本地装的也能知道有没有新版。
             try {
               const res = await fetch('https://registry.npmjs.org/dsh-hear/latest', { signal: AbortSignal.timeout(5000) });
               if (res.ok) {
                 const json = await res.json();
                 latest = json?.version || null;
-                hasUpdate = Boolean(latest && latest !== VERSION);
+                if (latest) source = 'npm';
               }
             } catch {}
-            return json(res, 200, { ok: true, current: VERSION, latest, hasUpdate });
+            if (!latest) {
+              try {
+                const res = await fetch('https://api.github.com/repos/FlyingCharon/dsh-hear/releases/latest', {
+                  headers: { 'user-agent': 'dsh-hear' },
+                  signal: AbortSignal.timeout(6000),
+                });
+                if (res.ok) {
+                  const json = await res.json();
+                  const tag = String(json?.tag_name || '').replace(/^v/i, '');
+                  if (tag) {
+                    latest = tag;
+                    source = 'github';
+                  }
+                }
+              } catch {}
+            }
+            if (latest) hasUpdate = latest !== VERSION;
+            return json(res, 200, {
+              ok: true,
+              current: VERSION,
+              latest,
+              hasUpdate,
+              source,
+              download: 'https://github.com/FlyingCharon/dsh-hear/releases/latest',
+            });
           }
           if (sub === '/onboard/check' && req.method === 'GET') return json(res, 200, { ok: true, check: await onboardCheck() });
           if (sub === '/onboard/done' && req.method === 'POST') {

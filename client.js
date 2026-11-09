@@ -582,9 +582,13 @@ window.__ModuleLoader__.load({
         setBanner('');
         try {
           const data = await api('/update/check');
-          if (data.hasUpdate) setToast(`有新版本 ${data.latest}，当前 ${data.current}，去设置里的插件页点更新`);
-          else if (data.latest) setToast(`已是最新（${data.current}）`);
-          else setToast(`当前 ${data.current}，还没发布到 npm，查不到新版`);
+          if (data.hasUpdate) {
+            setToast(`有新版本 v${data.latest}（当前 v${data.current}），去 ${data.download || 'GitHub Releases'} 下新包，装完重启宿主`);
+          } else if (data.latest) {
+            setToast(`已是最新（v${data.current}，来源 ${data.source === 'github' ? 'GitHub' : 'npm'}）`);
+          } else {
+            setToast(`当前 v${data.current}，上游查不到版本`);
+          }
         } catch (error) {
           setBanner(String(error.message || error));
         } finally {

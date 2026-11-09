@@ -4,7 +4,7 @@
 
 不是把声音转成文字再读——那不算听。
 
-[下载 v0.1.0](https://github.com/FlyingCharon/dsh-hear/releases/tag/v0.1.0) · [安装](#安装) · [已知问题](#已知问题)
+[下载最新版](https://github.com/FlyingCharon/dsh-hear/releases/latest) · [安装](#安装) · [已知问题](#已知问题)
 
 ## 这个仓库里有什么
 
