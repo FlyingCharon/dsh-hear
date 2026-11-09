@@ -49,6 +49,8 @@ const DEFAULTS = {
   voicePorts: [8770, 9880],
   engine: 'local',
   qqWatch: { enabled: true, mediaDir: '', prefix: 'media_' },
+  // 她那条不落盘：直接读 SnowLuma 的库，用她的 OneBot 取音频再落到她的目录。
+  snowVoice: { enabled: false, dbPath: '', baseUrl: '', token: '', outDir: '', intervalMs: 4000 },
   bridges: [],
   reply: { enabled: false, provider: 'none', baseUrl: '', token: '', target: '', webhookUrl: '', cooldownMs: 60000, maxPerBatch: 1 },
   // 对话用语音回：默认走本地 8770 的合成接口，挂了就退回文字。
@@ -130,6 +132,7 @@ function readConfig() {
     ...raw,
     cloud: { ...DEFAULTS.cloud, ...(raw.cloud || {}) },
     qqWatch: { ...DEFAULTS.qqWatch, ...(raw.qqWatch || {}) },
+    snowVoice: { ...DEFAULTS.snowVoice, ...(raw.snowVoice || {}) },
     reply: { ...DEFAULTS.reply, ...(raw.reply || {}) },
     voiceReply: { ...DEFAULTS.voiceReply, ...(raw.voiceReply || {}) },
     cleanupReminder: { ...DEFAULTS.cleanupReminder, ...(raw.cleanupReminder || {}) },
@@ -1537,6 +1540,130 @@ function injectToBridge(text, bridge) {
   return event;
 }
 
+const SNOW_STATE_FILE = path.join(STATE_DIR, 'snow-voice.json');
+
+/**
+ * 她那条（SurfCore / 另一个号）的语音不落盘，但 SnowLuma 的库里留着每条 record 消息。
+ * 这里定时读库，用这个号自己的 OneBot get_record 取音频，落到她的媒体目录，
+ * 交给 QqWatcher 当普通语音听。
+ */
+class SnowVoiceIngest {
+  constructor(getConfig) {
+    this.getConfig = getConfig;
+    this.timer = null;
+    this.source = null;
+    this.lastError = '';
+    this.lastAt = 0;
+    this.count = 0;
+  }
+
+  get cfg() {
+    return this.getConfig().snowVoice || {};
+  }
+
+  start() {
+    this.stop();
+    const cfg = this.cfg;
+    if (!cfg.enabled) {
+      this.source = null;
+      return;
+    }
+    const interval = Math.max(2000, Number(cfg.intervalMs) || 4000);
+    this.source = `${cfg.dbPath || '（没填库路径）'}`;
+    this.timer = setInterval(() => {
+      this.tick().catch((error) => {
+        this.lastError = String(error?.message ?? error);
+      });
+    }, interval);
+    this.timer.unref?.();
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  async tick() {
+    const cfg = this.cfg;
+    if (!cfg.enabled || !cfg.dbPath || !fs.existsSync(cfg.dbPath)) return;
+    const outDir = cfg.outDir || DEFAULT_MEDIA_DIR;
+    mkdirp(outDir);
+    const state = readJson(SNOW_STATE_FILE, {}) || {};
+    const seen = new Set(Array.isArray(state.seen) ? state.seen : []);
+    const last = Number(state.lastTs) || Math.floor(Date.now() / 1000) - 300;
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(cfg.dbPath, { readOnly: true });
+    let rows = [];
+    try {
+      rows = db
+        .prepare("select message_hash, timestamp, data from messages where data like '%\"record\"%' and timestamp > ? order by timestamp asc limit 20")
+        .all(last);
+    } finally {
+      db.close();
+    }
+    if (!rows.length) return;
+    let newest = last;
+    let saved = 0;
+    for (const row of rows) {
+      newest = Math.max(newest, Number(row.timestamp) || 0);
+      const key = String(row.message_hash);
+      if (seen.has(key)) continue;
+      let parsed = null;
+      try {
+        parsed = JSON.parse(String(row.data));
+      } catch {}
+      const seg = (parsed?.message || []).find((s) => s && s.type === 'record');
+      const file = seg?.data?.file;
+      if (!file) continue;
+      try {
+        const base = String(cfg.baseUrl || '').replace(/\/+$/, '');
+        if (!base) throw new Error('没填她的 OneBot 地址');
+        const res = await fetch(`${base}/get_record`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(cfg.token ? { authorization: `Bearer ${cfg.token}` } : {}),
+          },
+          body: JSON.stringify({ file, out_format: 'mp3' }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const json = await res.json().catch(() => null);
+        const b64 = json?.data?.base64;
+        if (!b64) throw new Error(`get_record 没给 base64（${json?.status || res.status}）`);
+        const buf = Buffer.from(b64, 'base64');
+        if (buf.length < 1024) throw new Error('取回来的音频太小');
+        const out = path.join(outDir, `media_${Date.now()}_${key.replace(/[^0-9a-zA-Z]/g, '')}.mp3`);
+        fs.writeFileSync(out, buf);
+        saved += 1;
+        seen.add(key);
+      } catch (error) {
+        this.lastError = `取她的语音失败：${error?.message ?? error}`;
+        logError('snow-voice', this.lastError);
+      }
+    }
+    const keepSeen = Array.from(seen).slice(-200);
+    fs.writeFileSync(SNOW_STATE_FILE, JSON.stringify({ lastTs: newest, seen: keepSeen }, null, 2), 'utf8');
+    if (saved) {
+      this.count += saved;
+      this.lastAt = Date.now();
+    }
+  }
+
+  status() {
+    const cfg = this.cfg;
+    return {
+      enabled: Boolean(cfg.enabled),
+      source: this.source,
+      dbPath: cfg.dbPath || '',
+      outDir: cfg.outDir || DEFAULT_MEDIA_DIR,
+      polling: Boolean(this.timer),
+      saved: this.count,
+      lastAt: this.lastAt || null,
+      lastError: this.lastError,
+    };
+  }
+}
+
 function buildReplyTexts(notes, maxPerBatch) {
   const limit = Math.max(0, Math.min(10, Number(maxPerBatch) || 0));
   if (limit === 0) return [];
@@ -1819,6 +1946,8 @@ export function apply(ctx) {
   const ears = new EarsService(readConfig);
   const watcher = new QqWatcher(readConfig, () => ears);
   watcher.start();
+  const snowVoice = new SnowVoiceIngest(readConfig);
+  snowVoice.start();
 
   const guard = (req, res) => {
     const host = String(req.headers?.host ?? '').toLowerCase();
@@ -1892,7 +2021,7 @@ export function apply(ctx) {
         const url = new URL(req.url, 'http://127.0.0.1');
         const sub = url.pathname.slice(API.length) || '/';
         try {
-          if (sub === '/status' && req.method === 'GET') return json(res, 200, { ok: true, status: await ears.status(), qq: watcher.status(), cleanup: cleanupStatus(), config: readConfig() });
+          if (sub === '/status' && req.method === 'GET') return json(res, 200, { ok: true, status: await ears.status(), qq: watcher.status(), snow: snowVoice.status(), cleanup: cleanupStatus(), config: readConfig() });
           if (sub === '/update/check' && req.method === 'GET') {
             let latest = null;
             let hasUpdate = false;
@@ -2093,7 +2222,18 @@ export function apply(ctx) {
           }
           if (sub === '/qq/restart' && req.method === 'POST') {
             watcher.start();
-            return json(res, 200, { ok: true, qq: watcher.status() });
+            snowVoice.start();
+            return json(res, 200, { ok: true, qq: watcher.status(), snow: snowVoice.status() });
+          }
+          // 她那条的采集：手动跑一次，或看状态。
+          if (sub === '/qq/snow/status' && req.method === 'GET') return json(res, 200, { ok: true, snow: snowVoice.status() });
+          if (sub === '/qq/snow/poll' && req.method === 'POST') {
+            try {
+              await snowVoice.tick();
+              return json(res, 200, { ok: true, snow: snowVoice.status() });
+            } catch (error) {
+              return json(res, 200, { ok: false, error: String(error?.message ?? error), snow: snowVoice.status() });
+            }
           }
           // 一键对齐：清隐形字符、补默认目录、缺的就建；顺手把写文件那头也指过来。
           if (sub === '/qq/align' && req.method === 'POST') {
@@ -2384,6 +2524,7 @@ export function apply(ctx) {
   process.once('exit', onExit);
   ctx.effect(() => () => {
     watcher.stop();
+    snowVoice.stop();
     process.removeListener('exit', onExit);
     ears.clearIdle();
     if (ears.owned) {
