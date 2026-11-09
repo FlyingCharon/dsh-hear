@@ -1230,6 +1230,74 @@ function alignBridgeDirs() {
   };
 }
 
+/** 找哪些 profile 里配了 dsh-onebot-qq（它才是写语音文件的那一方）。 */
+function findOnebotPatchFiles() {
+  const base = path.join(os.homedir(), '.dsh', 'profiles');
+  const out = [];
+  try {
+    for (const name of fs.readdirSync(base)) {
+      const file = path.join(base, name, 'cordis.patch.yml');
+      if (!fs.existsSync(file)) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      if (!text.includes('dsh-onebot-qq')) continue;
+      out.push({ file, text });
+    }
+  } catch {}
+  return out;
+}
+
+/** 把 dsh-onebot 那一段的 mediaDir 改掉（改文件，要重启宿主才生效）。 */
+function patchOnebotMediaDir(text, dir) {
+  const lines = String(text).split(/\r?\n/);
+  const start = lines.findIndex((l) => /^\s*-\s*id:\s*dsh-onebot\s*$/.test(l));
+  if (start < 0) return { changed: false, reason: '没找到 - id: dsh-onebot 这一行' };
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^-\s/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  const block = lines.slice(start, end);
+  const cfgIdx = block.findIndex((l) => /^\s*config:\s*$/.test(l));
+  if (cfgIdx < 0) return { changed: false, reason: '这一段没有 config:' };
+  const quoted = JSON.stringify(String(dir));
+  const mediaIdx = block.findIndex((l) => /^\s*mediaDir:/.test(l));
+  if (mediaIdx >= 0) {
+    if (block[mediaIdx].trim() === `mediaDir: ${quoted}`) return { changed: false, reason: '已经是这个目录' };
+    block[mediaIdx] = `    mediaDir: ${quoted}`;
+  } else {
+    block.splice(cfgIdx + 1, 0, `    mediaDir: ${quoted}`);
+  }
+  return { changed: true, text: [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\n'), reason: '' };
+}
+
+/** 把「写的一方」也指到插件这边第一条启用桥的目录。 */
+function alignWriterDirs() {
+  const cfg = readConfig();
+  const bridge = (cfg.bridges || []).find((b) => b && b.enabled !== false);
+  if (!bridge) return { ok: false, reason: '没有启用的桥接，不知道往哪指' };
+  const target = bridge.mediaDir || DEFAULT_MEDIA_DIR;
+  const report = [];
+  for (const item of findOnebotPatchFiles()) {
+    const res = patchOnebotMediaDir(item.text, target);
+    if (!res.changed) {
+      report.push({ file: item.file, changed: false, reason: res.reason });
+      continue;
+    }
+    try {
+      // 改别人的配置之前先留一份，出事能退回去。
+      const backup = `${item.file}.bak-align-${Date.now()}`;
+      fs.copyFileSync(item.file, backup);
+      fs.writeFileSync(item.file, res.text, 'utf8');
+      report.push({ file: item.file, changed: true, dir: target, backup });
+    } catch (error) {
+      report.push({ file: item.file, changed: false, reason: String(error?.message ?? error) });
+    }
+  }
+  return { ok: true, dir: target, bridge: bridge.name || '', files: report, restartNeeded: report.some((r) => r.changed) };
+}
+
 function cleanupStatus() {  const cfg = readConfig();
   const rule = cfg.cleanupReminder || {};
   const next = nextCleanupAt(cfg);
@@ -1912,11 +1980,14 @@ export function apply(ctx) {
             watcher.start();
             return json(res, 200, { ok: true, qq: watcher.status() });
           }
-          // 一键对齐：清隐形字符、补默认目录、缺的就建，然后重启监听。
+          // 一键对齐：清隐形字符、补默认目录、缺的就建；顺手把写文件那头也指过来。
           if (sub === '/qq/align' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
             const result = alignBridgeDirs();
             watcher.start();
-            return json(res, 200, { ok: true, align: result, qq: watcher.status(), config: readConfig() });
+            let writer = null;
+            if (body?.writer !== false) writer = alignWriterDirs();
+            return json(res, 200, { ok: true, align: result, writer, qq: watcher.status(), config: readConfig() });
           }
           // 直接试一条语音：验证合成 + 发语音这条链。
           if (sub === '/qq/voice-test' && req.method === 'POST') {

@@ -741,12 +741,13 @@ window.__ModuleLoader__.load({
         }
       };
 
-      // 一键对齐：清掉复制带进来的隐形字符、补默认目录、缺目录直接建。
+      // 一键对齐：清掉复制带进来的隐形字符、补默认目录、缺目录直接建，顺带把写文件那头也指过来。
       const alignDirs = async () => {
         setBusy('align');
         try {
           const data = await api('/qq/align', { method: 'POST', body: {} });
           const a = data.align || {};
+          const w = data.writer || {};
           if (data.config) {
             setConfig(data.config);
             setDraft(padBridges(data.config));
@@ -755,6 +756,9 @@ window.__ModuleLoader__.load({
           if (a.created?.length) bits.push(`建了 ${a.created.length} 个目录`);
           if (a.cleaned?.length) bits.push(`清了 ${a.cleaned.length} 条里的隐形字符`);
           if (a.conflicts?.length) bits.push(`还有 ${a.conflicts.length} 处冲突`);
+          if (w.ok && w.files?.some((f) => f.changed)) bits.push(`写文件那头指到 ${w.dir}（重启宿主生效）`);
+          else if (w.ok && w.files?.length) bits.push('写文件那头已经指对了');
+          else if (w.ok === false) bits.push(`写文件那头没动：${w.reason}`);
           setToast(bits.length ? bits.join('，') : '目录都已经对齐了，没要动的');
         } catch (error) {
           setBanner(String(error.message || error));
