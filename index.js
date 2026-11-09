@@ -87,6 +87,31 @@ function mkdirp(dir) {
   } catch {}
 }
 
+/** 宿主启动早期有的服务还没就绪；先等它出现再干活，不然重启后要手动关一次才生效。 */
+function whenService(ctx, name, callback) {
+  const read = () => {
+    try {
+      return ctx.get(name) || null;
+    } catch {
+      return null;
+    }
+  };
+  const now = read();
+  if (now) {
+    callback(now);
+    return;
+  }
+  const timer = setInterval(() => {
+    const found = read();
+    if (!found) return;
+    clearInterval(timer);
+    callback(found);
+  }, 500);
+  try {
+    ctx.effect(() => () => clearInterval(timer));
+  } catch {}
+}
+
 function readJson(file, fallback) {
   try {
     let text = fs.readFileSync(file, 'utf8');
@@ -1792,8 +1817,10 @@ export function apply(ctx) {
   }
 
   // ── routes ────────────────────────────────────────────────────────────────
-  const webServer = ctx.get('webServer');
-  if (webServer) {
+  // 宿主启动时 webServer 可能还没就绪，ctx.get 拿到空的话路由就永远不会注册，
+  // 表现就是「重启后插件连不上，手动关一次再开才好」。拿不到就等它出现。
+  const mountWebRoutes = (webServer) => {
+    if (!webServer) return;
     const API = '/dsh-hear/api';
     ctx.effect(() => webServer.register({
       kind: 'prefix',
@@ -2036,11 +2063,20 @@ export function apply(ctx) {
         }
       },
     }));
-  }
+  };
+
+  const webServerNow = (() => {
+    try {
+      return ctx.get('webServer');
+    } catch {
+      return null;
+    }
+  })();
+  if (webServerNow) mountWebRoutes(webServerNow);
+  else whenService(ctx, 'webServer', mountWebRoutes);
 
   // ── tools ─────────────────────────────────────────────────────────────────
-  const tools = ctx.get('tools');
-  if (tools) {
+  whenService(ctx, 'tools', (tools) => {
     ctx.effect(() => tools.register({
       name: 'hear',
       description: [
@@ -2196,7 +2232,7 @@ export function apply(ctx) {
         };
       },
     }));
-  }
+  });
 
   // 卸载倒计时不听完就开始：等这一轮说完、agent 回到 idle 之后，才按配置的分钟数起算。
   ctx.on('agent/status', (payload) => {
@@ -2216,8 +2252,7 @@ export function apply(ctx) {
   });
 
   // 把自动听到的 QQ 语音带进上下文，不用手动问。
-  const systemPrompt = ctx.get('systemPrompt');
-  if (systemPrompt) {
+  whenService(ctx, 'systemPrompt', (systemPrompt) => {
     ctx.effect(() => systemPrompt.section({
       name: 'dsh-hear-qq',
       order: 55,
@@ -2238,7 +2273,7 @@ export function apply(ctx) {
         }
       },
     }));
-  }
+  });
 
   // 卸载插件或退出进程时，只收自己起的那个进程。
   const onExit = () => {
