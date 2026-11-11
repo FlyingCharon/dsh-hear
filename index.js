@@ -51,6 +51,10 @@ const DEFAULTS = {
   qqWatch: { enabled: true, mediaDir: '', prefix: 'media_' },
   // 她那条不落盘：直接读 SnowLuma 的库，用她的 OneBot 取音频再落到她的目录。
   snowVoice: { enabled: false, dbPath: '', baseUrl: '', token: '', outDir: '', intervalMs: 4000 },
+  // 听感记忆：只存不主动塞上下文，靠 hear_recall 按需查。
+  memory: { enabled: true, maxEntries: 800, recallDefault: 20 },
+  // 快速听：小模型常驻，跑在单独端口；第一次用才拉起。
+  fast: { enabled: true, port: 8780, timeoutMs: 120000, startTimeoutMs: 240000 },
   bridges: [],
   reply: { enabled: false, provider: 'none', baseUrl: '', token: '', target: '', webhookUrl: '', cooldownMs: 60000, maxPerBatch: 1 },
   // 对话用语音回：默认走本地 8770 的合成接口，挂了就退回文字。
@@ -61,15 +65,102 @@ const DEFAULTS = {
 };
 
 const MODELS = [
-  { id: 'Qwen/Qwen2-Audio-7B-Instruct', name: 'Qwen2-Audio-7B-Instruct', size: '16.8G', vram: '显存12G起（4bit 约 4.5G）', note: '默认，中文听感稳', dir: 'qwen2-audio-7b', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: true, trustRemoteCode: false, vram: 12, engine: 'qwen2audio' } },
-  { id: 'OpenBMB/MiniCPM-o-2_6-int4', name: 'MiniCPM-o-2_6-int4', size: '7.7G', vram: '显存8G起', note: '显存紧的人首选（引擎已写，未实测）', dir: 'minicpm-o-2_6-int4', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 8, engine: 'minicpm' } },
-  { id: 'Qwen/Qwen2.5-Omni-3B', name: 'Qwen2.5-Omni-3B', size: '7.5G', vram: '显存6G起（4bit 约 3G）', note: '低配首选，小显存也能跑（引擎已写，未实测）', dir: 'qwen2.5-omni-3b', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 6, engine: 'qwen2omni' } },
-  { id: 'OpenBMB/MiniCPM-o-2_6', name: 'MiniCPM-o-2_6', size: '17.4G', vram: '显存12G起', note: '同系列全精度（引擎已写，未实测）', dir: 'minicpm-o-2_6', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 12, engine: 'minicpm' } },
-  { id: 'Qwen/Qwen2.5-Omni-7B', name: 'Qwen2.5-Omni-7B', size: '22.4G', vram: '显存16G起或4bit', note: '听感更强，慢（引擎已写，未实测）', dir: 'qwen2.5-omni-7b', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 16, engine: 'qwen2omni' } },
-  { id: 'THUDM/GLM-4-Voice', name: 'GLM-4-Voice 9B', size: '19.1G', vram: '显存16G起', note: '偏聊天，不是纯听；还没接推理，只能下载', dir: 'glm-4-voice', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null } },
-  { id: 'stepfun-ai/Step-Audio-2-mini', name: 'Step-Audio-2-mini', size: '17.9G', vram: '显存16G起', note: '备选；还没接推理，只能下载', dir: 'step-audio-2-mini', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null } },
-  { id: 'moonshotai/Kimi-Audio-7B-Instruct', name: 'Kimi-Audio-7B-Instruct', size: '42.6G', vram: '显存24G起', note: '佬级配置；还没接推理，只能下载', dir: 'kimi-audio-7b', requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 24, engine: null } },
-];
+  // ── 快速对话区（小模型常驻，走 8780 那个服务；没有显卡也能跑）────────────
+  {
+    id: 'iic/SenseVoiceSmall',
+    name: 'SenseVoiceSmall',
+    area: 'fast',
+    size: '约 230M',
+    vram: '几乎不占显存，CPU 也能跑',
+    note: '转写 + 声音事件（音乐/笑声/掌声），秒级；日常每条语音走这里',
+    dir: 'sensevoice-small',
+    requires: { modules: ['funasr', 'modelscope', 'soundfile', 'librosa'], bitsandbytes: false, trustRemoteCode: false, vram: 1, engine: 'fast' },
+  },
+  {
+    id: 'local/numbers',
+    name: '本机数值（不需要模型）',
+    area: 'fast',
+    size: '0',
+    vram: '0',
+    note: '时长、音量、语速、停顿、基频；不靠模型，最经得起核对',
+    dir: 'numbers',
+    requires: { modules: [], bitsandbytes: false, trustRemoteCode: false, vram: 0, engine: 'fast' },
+  },
+
+  // ── 理解区（大模型，按需加载，负责解释和素材描述）────────────────────────
+  {
+    id: 'Qwen/Qwen2-Audio-7B-Instruct',
+    name: 'Qwen2-Audio-7B-Instruct',
+    area: 'understand',
+    size: '16.8G',
+    vram: '显存 12G 起（4bit 约 4.5G）',
+    note: '已验证，中文听感稳，默认用这个',
+    dir: 'qwen2-audio-7b',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: true, trustRemoteCode: false, vram: 12, engine: 'qwen2audio' },
+  },
+  {
+    id: 'Qwen/Qwen2.5-Omni-3B',
+    name: 'Qwen2.5-Omni-3B',
+    area: 'understand',
+    size: '7.5G',
+    vram: '显存 8G 起（4bit 约 3G）',
+    note: '低配首选：能听也能说（引擎已写，未实测）',
+    dir: 'qwen2.5-omni-3b',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 8, engine: 'qwen2omni' },
+  },
+
+  // ── 实验区（还没实测，愿意折腾的人再碰）──────────────────────────────────
+  {
+    id: 'Qwen/Qwen2.5-Omni-7B',
+    name: 'Qwen2.5-Omni-7B',
+    area: 'lab',
+    size: '22.4G',
+    vram: '显存 16G 起或 4bit',
+    note: '听感更强，慢（引擎已写，未实测）',
+    dir: 'qwen2.5-omni-7b',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 16, engine: 'qwen2omni' },
+  },
+  {
+    id: 'OpenBMB/MiniCPM-o-2_6-int4',
+    name: 'MiniCPM-o-2_6-int4',
+    area: 'lab',
+    size: '7.7G',
+    vram: '显存 8G 起',
+    note: '显存紧的人可以试（引擎已写，未实测）',
+    dir: 'minicpm-o-2_6-int4',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 8, engine: 'minicpm' },
+  },
+  {
+    id: 'THUDM/GLM-4-Voice',
+    name: 'GLM-4-Voice 9B',
+    area: 'lab',
+    size: '19.1G',
+    vram: '显存 16G 起',
+    note: '偏聊天，不是纯听；还没接推理，只能下载',
+    dir: 'glm-4-voice',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null },
+  },
+  {
+    id: 'stepfun-ai/Step-Audio-2-mini',
+    name: 'Step-Audio-2-mini',
+    area: 'lab',
+    size: '17.9G',
+    vram: '显存 16G 起',
+    note: '备选；还没接推理，只能下载',
+    dir: 'step-audio-2-mini',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null },
+  },
+  {
+    id: 'moonshotai/Kimi-Audio-7B-Instruct',
+    name: 'Kimi-Audio-7B-Instruct',
+    area: 'lab',
+    size: '42.6G',
+    vram: '显存 24G 起',
+    note: '佬级配置；还没接推理，只能下载',
+    dir: 'kimi-audio-7b',
+    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 24, engine: null },
+  },
+]
 
 /** 这个模型用哪个引擎；没接推理的给 'unsupported'，别拿错的引擎硬跑。 */
 function engineOf(modelId) {
@@ -133,6 +224,8 @@ function readConfig() {
     cloud: { ...DEFAULTS.cloud, ...(raw.cloud || {}) },
     qqWatch: { ...DEFAULTS.qqWatch, ...(raw.qqWatch || {}) },
     snowVoice: { ...DEFAULTS.snowVoice, ...(raw.snowVoice || {}) },
+    memory: { ...DEFAULTS.memory, ...(raw.memory || {}) },
+    fast: { ...DEFAULTS.fast, ...(raw.fast || {}) },
     reply: { ...DEFAULTS.reply, ...(raw.reply || {}) },
     voiceReply: { ...DEFAULTS.voiceReply, ...(raw.voiceReply || {}) },
     cleanupReminder: { ...DEFAULTS.cleanupReminder, ...(raw.cleanupReminder || {}) },
@@ -774,9 +867,11 @@ async function cloudHear(file, question, cfg) {
 
 /** 盯 QQ 桥接落盘的语音文件：看到新的就等静默，再一只只听。 */
 class QqWatcher {
-  constructor(getConfig, getEars) {
+  constructor(getConfig, getEars, getFast) {
     this.getConfig = getConfig;
     this.getEars = getEars;
+    this.getFast = getFast || (() => null);
+    this.memory = new HearMemory(getConfig);
     this.watcher = null;
     this.watchers = new Map();
     this.dirs = [];
@@ -916,18 +1011,45 @@ class QqWatcher {
           continue;
         }
         try {
-          const heard = await this.getEars().hear(item.file, '这是 QQ 里发来的一段语音。请用中文说说：说了什么、语气情绪、语速停顿、背景干不干净。');
-          const parsed = parseAnswer(heard.answer);
-          // 对话还是素材，在听完之后定：这段决定回复走语音还是走文字。
-          const decided = resolveMode(this.getConfig(), duration, parsed.answer, '');
-          notes.push({
-            at: new Date().toISOString(),
-            path: item.file,
-            bridge: item.bridge,
-            mode: decided.mode,
-            modeNote: decided.note,
-            ...parsed,
-          });
+          // 快速对话区：小模型 + 本机数值。日常走这里，秒级，不叫大模型。
+          const fastSvc = this.getFast();
+          const fastCfg = this.getConfig().fast || {};
+          let fastNote = null;
+          if (fastSvc && fastCfg.enabled !== false) {
+            try {
+              const grew = await fastSvc.listen(item.file);
+              fastNote = buildFastNote(grew, this.getConfig(), duration);
+            } catch (error) {
+              this.lastError = `快速对话区没听成：${error?.message ?? error}`;
+              logError('fast', this.lastError);
+            }
+          }
+
+          // 快速区听不了，或者这条是素材（有音乐/没人说话），才叫理解区的大模型。
+          if (!fastNote || fastNote.wantDetail) {
+            const heard = await this.getEars().hear(item.file, '这是 QQ 里发来的一段语音。请用中文说说：说了什么、语气情绪、语速停顿、背景干不干净。');
+            const parsed = parseAnswer(heard.answer);
+            const decided = resolveMode(this.getConfig(), duration, parsed.answer, '');
+            notes.push({
+              at: new Date().toISOString(),
+              path: item.file,
+              bridge: item.bridge,
+              mode: decided.mode,
+              modeNote: decided.note,
+              ...parsed,
+            });
+          } else {
+            notes.push({
+              at: new Date().toISOString(),
+              path: item.file,
+              bridge: item.bridge,
+              mode: fastNote.mode,
+              modeNote: fastNote.modeNote,
+              answer: fastNote.answer,
+              extras: fastNote.extras,
+              timeline: '',
+            });
+          }
         } catch (error) {
           notes.push({ at: new Date().toISOString(), path: item.file, bridge: item.bridge, error: String(error?.message ?? error) });
         }
@@ -942,6 +1064,16 @@ class QqWatcher {
       ].slice(-10);
       mkdirp(STATE_DIR);
       fs.writeFileSync(PENDING_FILE, JSON.stringify(this.pending, null, 2), 'utf8');
+
+      // 听感记忆：只记成功听到的，一条一行；错了的不进记忆。
+      try {
+        for (const note of notes) {
+          if (note.error || note.awaiting) continue;
+          this.memory.append({ ...note, bridgeName: String(note.bridge?.name || '') });
+        }
+      } catch (error) {
+        logError('memory', `写听感记忆失败：${error?.message ?? error}`);
+      }
 
       // 先问分段，再处理听完的主动回复。
       const askGroups = new Map();
@@ -1556,6 +1688,324 @@ function injectToBridge(text, bridge) {
 }
 
 const SNOW_STATE_FILE = path.join(STATE_DIR, 'snow-voice.json');
+const MEMORY_DIR = path.join(STATE_DIR, 'memory');
+const FAST_STATE_FILE = path.join(STATE_DIR, 'fast-service.json');
+
+/**
+ * 快速听：小模型常驻（SenseVoice 转写 + emotion2vec 判情绪），跑在单独的端口上。
+ * 大模型那套（8779）只在这条不行、或者要细听素材的时候才叫起来。
+ */
+class FastEars {
+  constructor(getConfig) {
+    this.getConfig = getConfig;
+    this.proc = null;
+    this.pid = null;
+    this.phase = 'off';
+    this.error = null;
+    this.startedAt = 0;
+    this.lastMs = 0;
+    this.lastPath = '';
+    this.logFile = path.join(STATE_DIR, 'fast.log');
+  }
+
+  get cfg() {
+    return this.getConfig().fast || {};
+  }
+
+  get port() {
+    return Number(this.cfg.port) || 8780;
+  }
+
+  get base() {
+    return `http://127.0.0.1:${this.port}`;
+  }
+
+  async health(timeoutMs = 1500) {
+    try {
+      const { ok, data } = await httpJson(`${this.base}/health`, {}, timeoutMs);
+      return ok && data ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async listen(file) {
+    if (this.cfg.enabled === false) throw new Error('快速听是关的');
+    if (!fs.existsSync(file)) throw new Error(`音频不存在：${file}`);
+    const up = await this.health(1200);
+    if (!up || !up.ok) {
+      const started = await this.start();
+      if (!started) throw new Error(this.error || '快速听服务起不来');
+    }
+    const t0 = Date.now();
+    const { ok, data } = await httpJson(`${this.base}/fast`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: file }),
+    }, Number(this.cfg.timeoutMs) || 120000);
+    if (!ok || !data) throw new Error(`快速听失败：${data?.error || '没有返回'}`);
+    if (data.ok === false) throw new Error(`快速听失败：${data.error || '未知'}`);
+    this.lastMs = Date.now() - t0;
+    this.lastPath = file;
+    return { ...data, ms: data.ms || this.lastMs };
+  }
+
+  async start() {
+    if (this.proc && this.pid) {
+      const up = await this.health(1200);
+      if (up && up.ok) return true;
+    }
+    const cfg = this.cfg;
+    const python = resolvePython(this.getConfig());
+    const script = path.join(HERE, 'server', 'fast_server.py');
+    if (!fs.existsSync(script)) {
+      this.error = `找不到 ${script}`;
+      return false;
+    }
+    const up0 = await this.health(1000);
+    if (up0 && up0.ok) {
+      this.phase = 'up';
+      this.pid = pidOnPort(this.port);
+      return true;
+    }
+    mkdirp(STATE_DIR);
+    const log = fs.openSync(this.logFile, 'a');
+    try {
+      const child = spawn(python, [script], {
+        cwd: HERE,
+        env: {
+          ...process.env,
+          HEAR_FAST_PORT: String(this.port),
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUNBUFFERED: '1',
+        },
+        stdio: ['ignore', log, log],
+        windowsHide: true,
+      });
+      this.proc = child;
+      this.pid = child.pid;
+      this.phase = 'starting';
+      this.startedAt = Date.now();
+      child.on('exit', () => {
+        this.phase = 'off';
+        this.proc = null;
+      });
+    } catch (error) {
+      this.error = `启动失败：${error?.message ?? error}`;
+      return false;
+    }
+    // 小模型加载要几十秒，第一次还要下模型
+    const deadline = Date.now() + (Number(cfg.startTimeoutMs) || 240000);
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const h = await this.health(1500);
+      if (h && h.ok) {
+        this.phase = 'up';
+        this.error = null;
+        return true;
+      }
+      if (h && h.error) {
+        this.error = h.error;
+        return false;
+      }
+    }
+    this.error = '快速听启动超时';
+    return false;
+  }
+
+  async status() {
+    const h = await this.health();
+    return {
+      enabled: this.cfg.enabled !== false,
+      port: this.port,
+      phase: h?.ok ? 'up' : this.phase,
+      pid: this.pid,
+      device: h?.device || '',
+      asr: h?.asr || '',
+      ser: h?.ser || '',
+      error: h?.error || this.error,
+      lastMs: this.lastMs || null,
+      lastPath: this.lastPath,
+    };
+  }
+
+  stop() {
+    if (this.pid) {
+      try {
+        killTree(this.pid);
+      } catch {}
+    }
+    this.pid = null;
+    this.proc = null;
+    this.phase = 'off';
+  }
+}
+
+/**
+ * 听感记忆：每听完一条，压成一行存起来（一条桥一个文件，免得串台）。
+ * 只记，不自动塞进上下文；要回头看的时候用 hear_recall 工具。
+ */
+class HearMemory {
+  constructor(getConfig) {
+    this.getConfig = getConfig;
+  }
+
+  fileFor(bridgeName) {
+    const safe = String(bridgeName || 'default')
+      .replace(/[\\/:*?"<>|\s]+/g, '_')
+      .slice(0, 40) || 'default';
+    return path.join(MEMORY_DIR, `${safe}.jsonl`);
+  }
+
+  append(note) {
+    const cfg = this.getConfig().memory || {};
+    if (cfg.enabled === false) return;
+    mkdirp(MEMORY_DIR);
+    const file = this.fileFor(note.bridgeName);
+    const entry = {
+      ts: Date.parse(note.at) || Date.now(),
+      bridge: note.bridgeName || '',
+      mode: note.mode || '',
+      dur: Number(note.duration) || null,
+      say: clampText(note.answer, 160),
+      tone: clampText(note.extras, 120),
+      timeline: clampText(note.timeline, 120),
+      file: path.basename(String(note.path || '')),
+    };
+    let lines = [];
+    try {
+      lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    } catch {}
+    lines.push(JSON.stringify(entry));
+    const cap = Math.max(50, Number(cfg.maxEntries) || 800);
+    if (lines.length > cap) lines = lines.slice(-cap);
+    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+  }
+
+  recall({ bridge, kind, days, limit } = {}) {
+    const dir = MEMORY_DIR;
+    if (!fs.existsSync(dir)) return [];
+    const cfg = this.getConfig().memory || {};
+    const n = Math.min(200, Math.max(1, Number(limit) || Number(cfg.recallDefault) || 20));
+    const since = days ? Date.now() - Number(days) * 86400000 : 0;
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .filter((f) => (bridge ? f.startsWith(this.fileFor(bridge).replace(MEMORY_DIR + path.sep, '').replace(/\.jsonl$/, '')) : true));
+    const rows = [];
+    for (const f of files) {
+      const src = f.replace(/\.jsonl$/, '');
+      let text = '';
+      try {
+        text = fs.readFileSync(path.join(dir, f), 'utf8');
+      } catch {
+        continue;
+      }
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const row = JSON.parse(line);
+          if (since && row.ts < since) continue;
+          if (kind && row.mode !== kind) continue;
+          rows.push({ ...row, bridge: row.bridge || src });
+        } catch {}
+      }
+    }
+    rows.sort((a, b) => a.ts - b.ts);
+    return rows.slice(-n);
+  }
+
+  stats() {
+    const dir = MEMORY_DIR;
+    if (!fs.existsSync(dir)) return { total: 0, bridges: [] };
+    const bridges = [];
+    let total = 0;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.jsonl'))) {
+      let count = 0;
+      try {
+        count = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean).length;
+      } catch {}
+      total += count;
+      bridges.push({ name: f.replace(/\.jsonl$/, ''), count });
+    }
+    return { total, bridges };
+  }
+
+  clear(bridge) {
+    if (bridge) {
+      const file = this.fileFor(bridge);
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      return;
+    }
+    if (!fs.existsSync(MEMORY_DIR)) return;
+    for (const f of fs.readdirSync(MEMORY_DIR).filter((x) => x.endsWith('.jsonl'))) {
+      fs.unlinkSync(path.join(MEMORY_DIR, f));
+    }
+  }
+}
+
+function clampText(value, max) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * 把快速对话区的结果拼成一条「听感」：内容是事实（转写），语气和数值分开写，
+ * 哪部分是推测、哪部分是量出来的，一眼能分清。
+ */
+function buildFastNote(fast, cfg, duration) {
+  const text = String(fast?.text || '').replace(/\s+/g, ' ').trim();
+  const events = Array.isArray(fast?.events) ? fast.events.filter(Boolean) : [];
+  const facts = fast?.facts || {};
+  const seconds = Number(duration) || Number(facts.duration) || 0;
+  const hasMusic = events.some((e) => /音乐|掌声|哭声|笑声/.test(e));
+  const words = text.replace(/\s+/g, '').length;
+
+  // 有音乐、或者又长又没字：交给理解区的大模型去描述。
+  const wantDetail = hasMusic || (!words && seconds > 10);
+
+  const answer = text
+    ? `${words <= 12 ? '他说' : '他说'}：${text}`
+    : hasMusic
+      ? '没听到人说话，只有音乐或环境声'
+      : '没听清内容';
+
+  const bits = [];
+  if (fast?.emotionHint && fast.emotionHint !== '中性' && fast.emotionHint !== '不确定') {
+    bits.push(`情绪（模型粗判）：${fast.emotionHint}`);
+  }
+  if (events.length) bits.push(`听到：${events.join('、')}`);
+  const nums = [];
+  if (facts.charsPerSec) nums.push(`语速 ${facts.charsPerSec} 字/秒`);
+  if (facts.rmsDb != null) nums.push(`音量 ${facts.rmsDb} dB`);
+  if (facts.pauseCount != null) nums.push(`停顿 ${facts.pauseCount} 处`);
+  if (facts.f0Median) {
+    const range = Array.isArray(facts.f0Range) ? `（${facts.f0Range[0]}–${facts.f0Range[1]} Hz）` : '';
+    nums.push(`音高中位数 ${facts.f0Median} Hz${range}`);
+  }
+  if (seconds) nums.push(`时长 ${seconds} 秒`);
+  if (nums.length) bits.push(`量出来的：${nums.join('，')}`);
+
+  const decided = resolveMode(cfg, seconds, answer, '');
+  const mode = hasMusic ? 'material' : decided.mode;
+  return {
+    answer,
+    extras: bits.join('；'),
+    mode,
+    modeNote: hasMusic ? '有音乐/音效，当素材' : decided.note,
+    wantDetail,
+  };
+}
+
+function formatMemoryRow(row) {  const when = new Date(row.ts);
+  const stamp = `${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')} ${String(
+    when.getHours(),
+  ).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+  const kind = row.mode === 'material' ? '素材' : row.mode === 'dialog' ? '对话' : row.mode || '';
+  const parts = [`${stamp}｜${row.bridge || '未知'}${kind ? `｜${kind}` : ''}`, row.say || ''];
+  if (row.tone) parts.push(`语气：${row.tone}`);
+  return parts.filter(Boolean).join('｜');
+}
 
 /**
  * 她那条（SurfCore / 另一个号）的语音不落盘，但 SnowLuma 的库里留着每条 record 消息。
@@ -1959,7 +2409,8 @@ function summarize(value) {
 
 export function apply(ctx) {
   const ears = new EarsService(readConfig);
-  const watcher = new QqWatcher(readConfig, () => ears);
+  const fastEars = new FastEars(readConfig);
+  const watcher = new QqWatcher(readConfig, () => ears, () => fastEars);
   watcher.start();
   const snowVoice = new SnowVoiceIngest(readConfig);
   snowVoice.start();
@@ -2036,7 +2487,7 @@ export function apply(ctx) {
         const url = new URL(req.url, 'http://127.0.0.1');
         const sub = url.pathname.slice(API.length) || '/';
         try {
-          if (sub === '/status' && req.method === 'GET') return json(res, 200, { ok: true, status: await ears.status(), qq: watcher.status(), snow: snowVoice.status(), cleanup: cleanupStatus(), config: readConfig() });
+          if (sub === '/status' && req.method === 'GET') return json(res, 200, { ok: true, status: await ears.status(), fast: await fastEars.status(), qq: watcher.status(), snow: snowVoice.status(), cleanup: cleanupStatus(), memory: watcher.memory.stats(), config: readConfig() });
           if (sub === '/update/check' && req.method === 'GET') {
             let latest = null;
             let hasUpdate = false;
@@ -2250,6 +2701,41 @@ export function apply(ctx) {
               return json(res, 200, { ok: false, error: String(error?.message ?? error), snow: snowVoice.status() });
             }
           }
+          // 快速听（小模型常驻）：看状态、手动起、手动停。
+          if (sub === '/fast/status' && req.method === 'GET') return json(res, 200, { ok: true, fast: await fastEars.status() });
+          if (sub === '/fast/start' && req.method === 'POST') {
+            const ok = await fastEars.start();
+            return json(res, 200, { ok, fast: await fastEars.status() });
+          }
+          if (sub === '/fast/stop' && req.method === 'POST') {
+            fastEars.stop();
+            return json(res, 200, { ok: true, fast: await fastEars.status() });
+          }
+          if (sub === '/fast/listen' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            try {
+              const result = await fastEars.listen(String(body?.path ?? ''));
+              return json(res, 200, { ok: true, result });
+            } catch (error) {
+              return json(res, 200, { ok: false, error: String(error?.message ?? error), fast: await fastEars.status() });
+            }
+          }
+          // 听感记忆：看看存了多少、最近几条、要不要清。
+          if (sub === '/memory' && req.method === 'GET') {
+            const url = new URL(req.url, 'http://127.0.0.1');
+            const rows = watcher.memory.recall({
+              bridge: url.searchParams.get('bridge') || undefined,
+              kind: url.searchParams.get('kind') || undefined,
+              days: Number(url.searchParams.get('days') || 0) || undefined,
+              limit: Number(url.searchParams.get('limit') || 50),
+            });
+            return json(res, 200, { ok: true, stats: watcher.memory.stats(), rows, text: rows.map(formatMemoryRow) });
+          }
+          if (sub === '/memory/clear' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            watcher.memory.clear(body?.bridge || '');
+            return json(res, 200, { ok: true, stats: watcher.memory.stats() });
+          }
           // 一键对齐：清隐形字符、补默认目录、缺的就建；顺手把写文件那头也指过来。
           if (sub === '/qq/align' && req.method === 'POST') {
             const body = await readBody(req).catch(() => ({}));
@@ -2334,6 +2820,45 @@ export function apply(ctx) {
 
   // ── tools ─────────────────────────────────────────────────────────────────
   whenService(ctx, 'tools', (tools) => {
+    // 听感记忆：只读。要回忆「他上次说这话时是什么语气」就翻这个。
+    ctx.effect(() => tools.register({
+      name: 'hear_recall',
+      description: [
+        '翻听感记忆：以前听过的语音里，说过什么、当时语气怎么样。',
+        '每行一条，带时间、哪条桥、是对话还是素材、内容摘要、语气。按时间从旧到新返回最后几条。',
+        '只在需要回忆时用（比如「我这周是不是有几次声音很低」），不要每轮都翻。',
+      ].join(''),
+      parameters: {
+        type: 'object',
+        properties: {
+          bridge: { type: 'string', description: '只看哪条桥（桥接名字），不填就是全部' },
+          kind: { type: 'string', enum: ['dialog', 'material'], description: '只看对话或只看素材，不填就是全部' },
+          days: { type: 'number', description: '只看最近几天，不填就是全部' },
+          limit: { type: 'number', description: '最多几条，默认 20，上限 200' },
+        },
+        additionalProperties: false,
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+      },
+      execute: async (args) => {
+        try {
+          const rows = watcher.memory.recall({
+            bridge: args.bridge,
+            kind: args.kind,
+            days: args.days,
+            limit: args.limit,
+          });
+          if (!rows.length) return { text: '没有听感记忆。', count: 0 };
+          const lines = rows.map((row) => `- ${formatMemoryRow(row)}`);
+          return { text: lines.join('\n'), count: rows.length };
+        } catch (error) {
+          return { text: `翻记忆失败：${error?.message ?? error}`, count: 0 };
+        }
+      },
+    }));
+
     ctx.effect(() => tools.register({
       name: 'hear',
       description: [

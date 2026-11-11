@@ -19,6 +19,18 @@ window.__ModuleLoader__.load({
       { id: 'qwen', name: '通义 Qwen-Omni', note: '国内可直连，便宜' },
     ];
 
+    // 模型分三个区：快、理解、实验。
+    const AREA_TITLE = {
+      fast: '快速对话区 · 小模型（常驻，秒回）',
+      understand: '理解区 · 大模型（按需加载，负责解释和素材）',
+      lab: '实验区（没实测，愿意折腾再碰）',
+    };
+    const AREA_HINT = {
+      fast: '日常每条语音走这里：转写、事件、数值。几乎不占显存，没有显卡也能跑。',
+      understand: '需要「这句像不像在忍」「这段音乐在讲什么」这种解释时才叫起来，用完卸载。',
+      lab: '这些模型引擎已经留了位置，但还没实测过，别当稳定选项。',
+    };
+
     const ZH = {
       nav: '鱼鱼的耳朵',
       title: '鱼鱼的耳朵',
@@ -303,6 +315,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null);
       const [records, setRecords] = useState([]);
       const [diag, setDiag] = useState(null);
+      const [memory, setMemory] = useState(null);
       const [models, setModels] = useState([]);
       const [disk, setDisk] = useState(null);
       const [job, setJob] = useState(null);
@@ -398,6 +411,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         if (tab === 'models') loadModels();
+        if (tab === 'memory') api('/memory?limit=80').then(setMemory).catch((e) => setBanner(String(e.message)));
         if (tab === 'doctor' && !diag) api('/diagnose').then(setDiag).catch((e) => setBanner(String(e.message)));
       }, [tab, diag, loadModels]);
 
@@ -871,6 +885,7 @@ window.__ModuleLoader__.load({
           ['status', t('status')],
           ['options', t('options')],
           ['models', t('models')],
+          ['memory', '记忆'],
           ['doctor', t('doctor')],
         ].map(([id, label]) => h('button', {
           key: id,
@@ -1175,9 +1190,17 @@ window.__ModuleLoader__.load({
               ]) : null,
             ]),
             h('b', { key: 'local', style: { fontSize: '12.5px', display: 'block', margin: '10px 0 2px' } }, '本地模型'),
-            models.length ? models.map((m) => {
+            models.length ? models.map((m, idx) => {
               const active = job && job.id === m.id && ['listing', 'downloading'].includes(job.phase);
-              return h('div', { className: 'hear-model', key: m.id }, [
+              const area = m.area || 'understand';
+              const prevArea = idx > 0 ? (models[idx - 1].area || 'understand') : '';
+              const head = area !== prevArea
+                ? [
+                  h('b', { key: 'ah', style: { fontSize: '12.5px', display: 'block', margin: '12px 0 2px' } }, AREA_TITLE[area] || area),
+                  h('p', { key: 'ap', className: 'hear-hint', style: { margin: '0 0 6px' } }, AREA_HINT[area] || ''),
+                ]
+                : [];
+              return h('div', { key: m.id }, [...head, h('div', { className: 'hear-model', key: 'row' }, [
                 h('div', { key: 'l', style: { minWidth: 0, flex: 1 } }, [
                   h('div', { key: 'n' }, [
                     h('b', null, m.name),
@@ -1214,13 +1237,60 @@ window.__ModuleLoader__.load({
                     m.installed ? h('button', { className: 'hear-btn danger', key: 'u', disabled: Boolean(busy), onClick: () => uninstallModel(m) }, busy === 'remove' ? '卸载中…' : '卸载') : null,
                     h('button', { className: 'hear-btn', key: 'o', onClick: () => openModelPage(m) }, '打开模型页'),
                   ]),
-              ]);
+              ])]);
             }) : h('div', { className: 'hear-empty', key: 'e' }, '读取中…'),
             job && ['done', 'error', 'cancelled'].includes(job.phase) ? h('p', {
               className: 'hear-hint',
               key: 'j',
               style: { color: job.phase === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' },
             }, job.phase === 'done' ? `下载完成：${job.name}` : job.phase === 'error' ? `下载失败：${job.error || '未知原因'}` : '下载已取消') : null,
+          ]) : null,
+          tab === 'memory' ? h('div', { key: 'mem' }, [
+            h('div', { className: 'hear-row', key: 'h', style: { marginBottom: '8px' } }, [
+              h('p', { className: 'hear-hint', key: 'h1', style: { margin: 0, flex: 1 } }, '听感记忆：每听完一条压成一行存下来。它不会自己进上下文，要 agent 用 hear_recall 去翻。'),
+              h('button', {
+                className: 'hear-btn',
+                key: 'r',
+                disabled: Boolean(busy),
+                onClick: () => {
+                  api('/memory?limit=80').then(setMemory).catch((e) => setBanner(String(e.message)));
+                },
+              }, '刷新'),
+              h('button', {
+                className: 'hear-btn danger',
+                key: 'c',
+                disabled: Boolean(busy) || !(memory?.rows || []).length,
+                onClick: async () => {
+                  if (!window.confirm('清空所有听感记忆？这个不能撤销。')) return;
+                  setBusy('memclear');
+                  try {
+                    setMemory(await api('/memory/clear', { method: 'POST', body: JSON.stringify({}) }));
+                    setToast('听感记忆已清空');
+                  } catch (e) {
+                    setBanner(String(e.message));
+                  } finally {
+                    setBusy('');
+                  }
+                },
+              }, busy === 'memclear' ? '清理中…' : '清空'),
+            ]),
+            memory
+              ? h('div', { key: 'stat', className: 'hear-hint', style: { margin: '0 0 8px' } }, `共 ${memory.stats?.total ?? 0} 条${(memory.stats?.bridges || []).length ? `（${(memory.stats.bridges || []).map((b) => `${b.name} ${b.count}`).join('，')}）` : ''}`)
+              : h('div', { key: 'stat', className: 'hear-hint', style: { margin: '0 0 8px' } }, '读取中…'),
+            !(memory?.rows || []).length
+              ? h('p', { key: 'empty', className: 'hear-hint' }, memory ? '还没有记忆。听完一条语音就会有一条。' : '')
+              : h('div', { key: 'list', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+                (memory.rows || []).slice().reverse().map((row, i) => h('div', {
+                  key: `${row.ts}-${i}`,
+                  className: 'hear-model',
+                  style: { alignItems: 'flex-start' },
+                }, [
+                  h('div', { key: 'l', style: { flex: 1, minWidth: 0 } }, [
+                    h('div', { key: 't', className: 'hear-hint' }, `${new Date(row.ts).toLocaleString()}｜${row.bridge || '未知'}${row.mode ? `｜${row.mode === 'material' ? '素材' : row.mode === 'dialog' ? '对话' : row.mode}` : ''}`),
+                    h('div', { key: 's', style: { marginTop: '2px' } }, row.say || '(没记到内容)'),
+                    row.tone ? h('div', { key: 'o', className: 'hear-hint' }, `语气：${row.tone}`) : null,
+                  ]),
+                ]))),
           ]) : null,
           tab === 'doctor' ? h('div', { key: 'dr' }, [
             h('div', { className: 'hear-row', key: 'b', style: { marginBottom: '10px' } }, [
