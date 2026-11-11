@@ -1196,8 +1196,18 @@ window.__ModuleLoader__.load({
               const prevArea = idx > 0 ? (models[idx - 1].area || 'understand') : '';
               const head = area !== prevArea
                 ? [
-                  h('b', { key: 'ah', style: { fontSize: '12.5px', display: 'block', margin: '12px 0 2px' } }, AREA_TITLE[area] || area),
-                  h('p', { key: 'ap', className: 'hear-hint', style: { margin: '0 0 6px' } }, AREA_HINT[area] || ''),
+                  h('b', {
+                    key: 'ah',
+                    style: {
+                      display: 'block',
+                      margin: '18px 0 4px',
+                      fontSize: '15px',
+                      fontWeight: 700,
+                      letterSpacing: '.2px',
+                      color: 'var(--dsw-alias-text-primary, #f4f4f5)',
+                    },
+                  }, AREA_TITLE[area] || area),
+                  h('p', { key: 'ap', className: 'hear-hint', style: { margin: '0 0 8px', fontSize: '12px', lineHeight: 1.55 } }, AREA_HINT[area] || ''),
                 ]
                 : [];
               return h('div', { key: m.id }, [...head, h('div', { className: 'hear-model', key: 'row' }, [
