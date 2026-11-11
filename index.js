@@ -76,16 +76,6 @@ const MODELS = [
     dir: 'sensevoice-small',
     requires: { modules: ['funasr', 'modelscope', 'soundfile', 'librosa'], bitsandbytes: false, trustRemoteCode: false, vram: 1, engine: 'fast' },
   },
-  {
-    id: 'local/numbers',
-    name: '本机数值（不需要模型）',
-    area: 'fast',
-    size: '0',
-    vram: '0',
-    note: '时长、音量、语速、停顿、基频；不靠模型，最经得起核对',
-    dir: 'numbers',
-    requires: { modules: [], bitsandbytes: false, trustRemoteCode: false, vram: 0, engine: 'fast' },
-  },
 
   // ── 理解区（大模型，按需加载，负责解释和素材描述）──────────────────────
   {
