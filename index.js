@@ -65,7 +65,7 @@ const DEFAULTS = {
 };
 
 const MODELS = [
-  // ── 快速对话区（小模型常驻，走 8780 那个服务；没有显卡也能跑）────────────
+  // ── 快速对话区（小模型常驻，8780；没有显卡也能跑）──────────────────────
   {
     id: 'iic/SenseVoiceSmall',
     name: 'SenseVoiceSmall',
@@ -87,7 +87,7 @@ const MODELS = [
     requires: { modules: [], bitsandbytes: false, trustRemoteCode: false, vram: 0, engine: 'fast' },
   },
 
-  // ── 理解区（大模型，按需加载，负责解释和素材描述）────────────────────────
+  // ── 理解区（大模型，按需加载，负责解释和素材描述）──────────────────────
   {
     id: 'Qwen/Qwen2-Audio-7B-Instruct',
     name: 'Qwen2-Audio-7B-Instruct',
@@ -108,113 +108,7 @@ const MODELS = [
     dir: 'qwen2.5-omni-3b',
     requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 8, engine: 'qwen2omni' },
   },
-
-  // ── 实验区（还没实测，愿意折腾的人再碰）──────────────────────────────────
-  {
-    id: 'Qwen/Qwen2.5-Omni-7B',
-    name: 'Qwen2.5-Omni-7B',
-    area: 'lab',
-    size: '22.4G',
-    vram: '显存 16G 起或 4bit',
-    note: '听感更强，慢（引擎已写，未实测）',
-    dir: 'qwen2.5-omni-7b',
-    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy', 'qwen_omni_utils'], bitsandbytes: false, trustRemoteCode: false, vram: 16, engine: 'qwen2omni' },
-  },
-  {
-    id: 'OpenBMB/MiniCPM-o-2_6-int4',
-    name: 'MiniCPM-o-2_6-int4',
-    area: 'lab',
-    size: '7.7G',
-    vram: '显存 8G 起',
-    note: '显存紧的人可以试（引擎已写，未实测）',
-    dir: 'minicpm-o-2_6-int4',
-    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 8, engine: 'minicpm' },
-  },
-  {
-    id: 'THUDM/GLM-4-Voice',
-    name: 'GLM-4-Voice 9B',
-    area: 'lab',
-    size: '19.1G',
-    vram: '显存 16G 起',
-    note: '偏聊天，不是纯听；还没接推理，只能下载',
-    dir: 'glm-4-voice',
-    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null },
-  },
-  {
-    id: 'stepfun-ai/Step-Audio-2-mini',
-    name: 'Step-Audio-2-mini',
-    area: 'lab',
-    size: '17.9G',
-    vram: '显存 16G 起',
-    note: '备选；还没接推理，只能下载',
-    dir: 'step-audio-2-mini',
-    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 16, engine: null },
-  },
-  {
-    id: 'moonshotai/Kimi-Audio-7B-Instruct',
-    name: 'Kimi-Audio-7B-Instruct',
-    area: 'lab',
-    size: '42.6G',
-    vram: '显存 24G 起',
-    note: '佬级配置；还没接推理，只能下载',
-    dir: 'kimi-audio-7b',
-    requires: { modules: ['torch', 'transformers', 'soundfile', 'numpy'], bitsandbytes: false, trustRemoteCode: true, vram: 24, engine: null },
-  },
-]
-
-/** 这个模型用哪个引擎；没接推理的给 'unsupported'，别拿错的引擎硬跑。 */
-function engineOf(modelId) {
-  const model = MODELS.find((m) => m.id === modelId);
-  if (!model) return 'unsupported';
-  return (model.requires && model.requires.engine) || 'unsupported';
-}
-
-function listenableModel(modelId) {
-  const model = MODELS.find((m) => m.id === modelId);
-  return Boolean(model && model.requires && model.requires.engine);
-}
-
-function mkdirp(dir) {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch {}
-}
-
-/** 宿主启动早期有的服务还没就绪；先等它出现再干活，不然重启后要手动关一次才生效。 */
-function whenService(ctx, name, callback) {
-  const read = () => {
-    try {
-      return ctx.get(name) || null;
-    } catch {
-      return null;
-    }
-  };
-  const now = read();
-  if (now) {
-    callback(now);
-    return;
-  }
-  const timer = setInterval(() => {
-    const found = read();
-    if (!found) return;
-    clearInterval(timer);
-    callback(found);
-  }, 500);
-  try {
-    ctx.effect(() => () => clearInterval(timer));
-  } catch {}
-}
-
-function readJson(file, fallback) {
-  try {
-    let text = fs.readFileSync(file, 'utf8');
-    // 有的编辑器/脚本会写 BOM，JSON.parse 见到就直接抛，配置会被静默当成空的。
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-}
+];
 
 function readConfig() {
   const raw = readJson(CONFIG_FILE, {});
@@ -258,6 +152,58 @@ function readConfig() {
     ];
   }
   return merged;
+}
+
+function engineOf(modelId) {
+  const model = MODELS.find((m) => m.id === modelId);
+  if (!model) return 'unsupported';
+  return (model.requires && model.requires.engine) || 'unsupported';
+}
+
+function listenableModel(modelId) {
+  const model = MODELS.find((m) => m.id === modelId);
+  return Boolean(model && model.requires && model.requires.engine);
+}
+
+function mkdirp(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {}
+}
+
+function whenService(ctx, name, callback) {
+  const read = () => {
+    try {
+      return ctx.get(name) || null;
+    } catch {
+      return null;
+    }
+  };
+  const now = read();
+  if (now) {
+    callback(now);
+    return;
+  }
+  const timer = setInterval(() => {
+    const found = read();
+    if (!found) return;
+    clearInterval(timer);
+    callback(found);
+  }, 500);
+  try {
+    ctx.effect(() => () => clearInterval(timer));
+  } catch {}
+}
+
+function readJson(file, fallback) {
+  try {
+    let text = fs.readFileSync(file, 'utf8');
+    // 有的编辑器/脚本会写 BOM，JSON.parse 见到就直接抛，配置会被静默当成空的。
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
 }
 
 function writeConfig(patch) {
