@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
 
     // 模型分三个区：快、理解、实验。
     const AREA_TITLE = {
-      fast: '快速回复',
+      fast: '快速对话区 · 小模型（快速回复）',
       understand: '理解区 · 大模型（更细腻的情感判断与回复，也能参与对话）',
       lab: '实验区（没实测，愿意折腾再碰）',
     };
