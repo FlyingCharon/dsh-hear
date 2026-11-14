@@ -1058,7 +1058,7 @@ window.__ModuleLoader__.load({
                 ]),
                 h('div', { className: 'hear-row', key: 'r4', style: { marginTop: '6px' } }, [
                   h('input', { className: 'hear-input', placeholder: '例如 个人:10001 或 群组:123456', value: bridge.target || '', onChange: (e) => updateBridge(index, { target: e.target.value }) }),
-                  h('button', { className: 'hear-btn', key: 's', onClick: () => updateBridge(index, { send: !bridge.send }) }, bridge.send ? '主动回复 开' : '主动回复 关'),
+                  h('button', { className: 'hear-btn', key: 's', title: '听完把听感递给鱼鱼，提醒她该用语音还是文字；插件自己不合成、不代发', onClick: () => updateBridge(index, { send: !bridge.send }) }, bridge.send ? '听完提醒鱼鱼 开' : '听完提醒鱼鱼 关'),
                   h('button', {
                     className: 'hear-btn',
                     key: 'm',

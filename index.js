@@ -1037,7 +1037,8 @@ class QqWatcher {
         }
       }
 
-      // 每条桥接只管自己听来的那几段，带冷却，避免刷屏。
+      // 听完只做一件事：把听感递给鱼鱼，提醒她这条该怎么回。
+      // 插件不合成、不代发；回不回、用不用语音，是她自己决定（她自己有语音合成）。
       const groups = new Map();
       for (const note of notes) {
         const bridge = note.bridge;
@@ -1051,71 +1052,32 @@ class QqWatcher {
         const fallback = this.getConfig().reply || {};
         const cooldown = Number(bridge.cooldownMs ?? fallback.cooldownMs ?? 60000) || 60000;
         if (now - (this.lastReplyByBridge.get(key) || 0) < cooldown) continue;
-        const texts = buildReplyTexts(batch, bridge.maxPerBatch ?? fallback.maxPerBatch ?? 1);
-        // 渠道看模式：对话（和先问）出声，素材默认文字；桥接上可以强制。
-        const channel = batch.some((note) => replyChannelFor(note.mode, bridge, note.answer) === 'voice') ? 'voice' : 'text';
-        const voiceCfg = this.getConfig().voiceReply || {};
-
-        // 首选：把听到的交给桥接，让她自己组织语言回（回复内容和语气都是她的）。
-        if (fallback.viaAgent !== false && bridge.send) {
-          const heardText = batch
-            .map((note) => String(note.answer || '').replace(/\s+/g, ' ').trim().slice(0, 180))
-            .filter(Boolean)
-            .join(' / ');
-          if (heardText) {
-            // 注入的措辞决定她会不会用嘴回：对话必须写死「用语音」，含糊一句她就会打字。
-            const voicePrompt = String(
-              fallback.voicePrompt
-              || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是对话，不是素材。用你平常的样子回我，并且**必须用语音回**——调用语音工具（qq_send_voice）把话说成语音发出来，不要只打字。',
-            );
-            const materialPrompt = String(
-              fallback.materialPrompt
-              || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是段素材，不用回语音，一句话确认就行。',
-            );
-            const tpl = channel === 'voice' ? voicePrompt : materialPrompt;
-            const injected = tpl.replace(/\{heard\}/g, heardText);
-            try {
-              injectToBridge(injected, bridge);
-              this.lastReplyByBridge.set(key, now);
-              this.lastReplyAt = now;
-              this.lastReply = injected;
-              this.lastReplyChannel = 'agent';
-              continue;
-            } catch (error) {
-              logError('reply', `注入失败，退回自己回：${error?.message ?? error}`);
-            }
-          }
-        }
-
-        const sent = [];
-        for (const text of texts) {
-          try {
-            if (channel === 'voice' && voiceCfg.enabled !== false) {
-              await sendQqVoice(text, bridge, voiceCfg);
-            } else {
-              await sendQqText(text, bridge);
-            }
-            sent.push(text);
-            await new Promise((r) => setTimeout(r, 800));
-          } catch (error) {
-            logError('reply', error?.message ?? error);
-            // 语音这条挂了就退回文字，别让对方啥也收不到。
-            if (channel === 'voice') {
-              try {
-                await sendQqText(`${text}（语音没发出去）`, bridge);
-                sent.push(text);
-              } catch (fallbackError) {
-                logError('reply', fallbackError?.message ?? fallbackError);
-              }
-            }
-            break;
-          }
-        }
-        if (sent.length) {
+        const limit = Math.max(1, Number(bridge.maxPerBatch ?? fallback.maxPerBatch ?? 1) || 1);
+        const picked = batch.slice(-limit);
+        const heardText = picked
+          .map((note) => String(note.answer || '').replace(/\s+/g, ' ').trim().slice(0, 180))
+          .filter(Boolean)
+          .join(' / ');
+        if (!heardText) continue;
+        const isDialog = picked.some((note) => replyChannelFor(note.mode, bridge, note.answer) === 'voice');
+        const voicePrompt = String(
+          fallback.voicePrompt
+          || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是对话：像平常那样回我，用语音合成说回来，别只打字。',
+        );
+        const materialPrompt = String(
+          fallback.materialPrompt
+          || '（我刚发来一段语音。耳朵听到的：{heard}）\n这是素材：用文字回一句就行；如果我要你出声，再用语音。',
+        );
+        const injected = (isDialog ? voicePrompt : materialPrompt).replace(/\{heard\}/g, heardText);
+        try {
+          injectToBridge(injected, bridge);
           this.lastReplyByBridge.set(key, now);
           this.lastReplyAt = now;
-          this.lastReply = sent.join(' / ');
-          this.lastReplyChannel = channel;
+          this.lastReply = injected;
+          this.lastReplyChannel = 'agent';
+          this.lastDecision = isDialog ? 'voice' : 'text';
+        } catch (error) {
+          logError('reply', `提醒失败（不给鱼鱼发消息，只记日志）：${error?.message ?? error}`);
         }
       }
     } finally {
