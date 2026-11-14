@@ -1144,16 +1144,42 @@ class QqWatcher {
   contextText() {
     const parts = [];
     for (const row of this.conflicts || []) parts.push(row.text);
-    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-    const rows = this.pending.filter((row) => Date.parse(row.at) > cutoff);
+    // 最近两小时的听感，压缩成几行塞进上下文：说了一句什么都记住，别转头就忘。
+    let rows = [];
+    try {
+      rows = this.memory.recall({ area: 'hear', days: 2 / 24, limit: 20 });
+    } catch {}
+    if (!rows.length) {
+      const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+      rows = this.pending
+        .filter((row) => Date.parse(row.at) > cutoff)
+        .map((row) => ({
+          ts: Date.parse(row.at) || Date.now(),
+          bridge: row.bridgeName || '未知',
+          say: row.error ? `没听成：${row.error}` : row.answer,
+          tone: row.extras || '',
+        }));
+    }
     if (rows.length) {
-      parts.push([
-        '最近听到的 QQ 语音（耳朵自动听的，原文在 ~/.dsh/hear/qq-pending.json）：',
-        ...rows.slice(-5).map((row) => {
-          const who = row.bridgeName ? `【${row.bridgeName}】` : '【未知来源】';
-          return `- ${row.at}｜${who}${path.basename(row.path)}｜${row.error ? `没听成：${row.error}` : row.answer}`;
-        }),
-      ].join('\n'));
+      const seen = new Set();
+      const lines = [];
+      for (const row of rows.slice().reverse()) {
+        const say = String(row.say || '').replace(/\s+/g, ' ').trim();
+        if (!say) continue;
+        const key = say.slice(0, 30);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const when = new Date(row.ts);
+        const hhmm = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+        lines.push(`- ${hhmm}｜【${row.bridge || '未知'}】${say.slice(0, 80)}${row.tone ? `｜${String(row.tone).slice(0, 40)}` : ''}`);
+        if (lines.length >= 3) break;
+      }
+      if (lines.length) {
+        parts.push([
+          '耳朵最近听回来的（不是你亲耳听到的，是外面那只耳朵转述的；分清是哪个号收到的）：',
+          ...lines,
+        ].join('\n'));
+      }
     }
     return parts.join('\n\n');
   }
