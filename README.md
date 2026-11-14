@@ -15,7 +15,7 @@
 - 记忆：每听完一条记一行，两个区（听来的 / 自己说出去的），要回忆时用 `hear_recall` 翻，不自动塞上下文。
 - QQ：盯着桥接目录里的语音文件，听完把结论递回给 agent；回不回、用不用语音，由 agent 自己决定。
 
-## 装
+## 安装
 
 1. Python 3.10 / 3.11，装完 `python --version` 能看到版本；
 2. 装依赖（国内可加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`）：
