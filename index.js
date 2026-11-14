@@ -963,7 +963,7 @@ class QqWatcher {
 
           // 快速区听不了，或者这条是素材（有音乐/没人说话），才叫理解区的大模型。
           if (!fastNote || fastNote.wantDetail) {
-            const heard = await this.getEars().hear(item.file, '这是 QQ 里发来的一段语音。请用中文说说：说了什么、语气情绪、语速停顿、背景干不干净。');
+            const heard = await this.getEars().hear(item.file, '这是 QQ 里发来的一段语音。请先把原话一字不差地转写出来，然后再单独说语气情绪、语速停顿、背景。');
             const parsed = parseAnswer(heard.answer);
             const decided = resolveMode(this.getConfig(), duration, parsed.answer, '');
             notes.push({
