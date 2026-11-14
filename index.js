@@ -1880,6 +1880,11 @@ class HearMemory {
   }
 }
 
+function accountFromDbPath(dbPath) {
+  const dir = path.basename(path.dirname(String(dbPath || '')));
+  return /^\d{5,}$/.test(dir) ? dir : '';
+}
+
 function clampText(value, max) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -1956,6 +1961,7 @@ class SnowVoiceIngest {
     this.lastError = '';
     this.lastAt = 0;
     this.count = 0;
+    this.skipped = 0;
   }
 
   get cfg() {
@@ -2016,6 +2022,14 @@ class SnowVoiceIngest {
       const seg = (parsed?.message || []).find((s) => s && s.type === 'record');
       const file = seg?.data?.file;
       if (!file) continue;
+      // 只收「对方发来的」语音。她自己发出去的（user_id 等于这个号的 uin）不算听感。
+      const uin = accountFromDbPath(cfg.dbPath);
+      const sender = String(parsed?.user_id ?? '');
+      if (uin && sender === uin) {
+        seen.add(key);
+        this.skipped += 1;
+        continue;
+      }
       try {
         const base = String(cfg.baseUrl || '').replace(/\/+$/, '');
         if (!base) throw new Error('没填她的 OneBot 地址');
@@ -2059,6 +2073,7 @@ class SnowVoiceIngest {
       outDir: cfg.outDir || DEFAULT_MEDIA_DIR,
       polling: Boolean(this.timer),
       saved: this.count,
+      skipped: this.skipped,
       lastAt: this.lastAt || null,
       lastError: this.lastError,
     };

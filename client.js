@@ -1290,17 +1290,29 @@ window.__ModuleLoader__.load({
             !(memory?.rows || []).length
               ? h('p', { key: 'empty', className: 'hear-hint' }, memory ? '还没有记忆。听完一条语音就会有一条。' : '')
               : h('div', { key: 'list', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                (memory.rows || []).slice().reverse().map((row, i) => h('div', {
-                  key: `${row.ts}-${i}`,
-                  className: 'hear-model',
-                  style: { alignItems: 'flex-start' },
-                }, [
-                  h('div', { key: 'l', style: { flex: 1, minWidth: 0 } }, [
-                    h('div', { key: 't', className: 'hear-hint' }, `${new Date(row.ts).toLocaleString()}｜${row.bridge || '未知'}${row.mode ? `｜${row.mode === 'material' ? '素材' : row.mode === 'dialog' ? '对话' : row.mode}` : ''}`),
-                    h('div', { key: 's', style: { marginTop: '2px' } }, row.say || '(没记到内容)'),
-                    row.tone ? h('div', { key: 'o', className: 'hear-hint' }, `语气：${row.tone}`) : null,
-                  ]),
-                ]))),
+                (() => {
+                  // 同一句话、同样数值的重复条目只留最新的一条
+                  const seen = new Set();
+                  const rows = [];
+                  for (const row of (memory.rows || []).slice().reverse()) {
+                    const k = `${row.bridge}|${row.say}|${row.tone}`;
+                    if (seen.has(k)) continue;
+                    seen.add(k);
+                    rows.push(row);
+                    if (rows.length >= 40) break;
+                  }
+                  return rows.map((row, i) => h('div', {
+                    key: `${row.ts}-${i}`,
+                    className: 'hear-model',
+                    style: { alignItems: 'flex-start' },
+                  }, [
+                    h('div', { key: 'l', style: { flex: 1, minWidth: 0 } }, [
+                      h('div', { key: 't', className: 'hear-hint', style: { fontSize: '11.5px' } }, `${new Date(row.ts).toLocaleString()}｜${row.bridge || '未知'}${row.mode ? `｜${row.mode === 'material' ? '素材' : '对话'}` : ''}${row.dur ? `｜${row.dur} 秒` : ''}`),
+                      h('div', { key: 's', style: { marginTop: '3px', lineHeight: 1.5 } }, row.say || '(没记到内容)'),
+                      row.tone ? h('div', { key: 'o', className: 'hear-hint', style: { marginTop: '2px', fontSize: '11.5px' } }, row.tone) : null,
+                    ]),
+                  ]));
+                })()),
           ]) : null,
           tab === 'doctor' ? h('div', { key: 'dr' }, [
             h('div', { className: 'hear-row', key: 'b', style: { marginBottom: '10px' } }, [
