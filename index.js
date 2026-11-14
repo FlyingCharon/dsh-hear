@@ -1581,6 +1581,12 @@ async function sendQqVoice(text, channel, voiceCfg = {}) {
   const wav = await speakText(text, voiceCfg);
   const cq = `[CQ:record,file=${wav}]`;
   const result = await sendQqText(cq, channel);
+  // 语音记忆：她说出去的每一句都留一行，跟「听感」分开存。
+  try {
+    new HearMemory(readConfig()).appendVoice({ bridgeName: String(channel?.name || ''), say: text, file: wav });
+  } catch (error) {
+    logError('memory', `写语音记忆失败：${error?.message ?? error}`);
+  }
   return { ...result, voice: wav, seconds: null };
 }
 
@@ -1786,28 +1792,69 @@ class HearMemory {
     this.getConfig = getConfig;
   }
 
-  fileFor(bridgeName) {
+  // hear = 听感（模型听回来的，别人说的）；voice = 语音（鱼鱼自己说出去的）
+  fileFor(bridgeName, area = 'hear') {
     const safe = String(bridgeName || 'default')
       .replace(/[\\/:*?"<>|\s]+/g, '_')
       .slice(0, 40) || 'default';
-    return path.join(MEMORY_DIR, `${safe}.jsonl`);
+    return path.join(MEMORY_DIR, `${area}-${safe}.jsonl`);
   }
 
-  append(note) {
+  // 老版本按「桥接名.jsonl」存，第一次用新名字时顺手搬过去。
+  migrate(bridgeName, area = 'hear') {
+    try {
+      const legacy = path.join(MEMORY_DIR, `${String(bridgeName || 'default').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 40) || 'default'}.jsonl`);
+      const target = this.fileFor(bridgeName, area);
+      if (fs.existsSync(legacy) && !fs.existsSync(target)) fs.renameSync(legacy, target);
+    } catch {}
+  }
+
+  // 老文件是「桥接名.jsonl」，统一搬成「hear-桥接名.jsonl」
+  migrateAll() {
+    try {
+      if (!fs.existsSync(MEMORY_DIR)) return;
+      for (const f of fs.readdirSync(MEMORY_DIR)) {
+        if (!f.endsWith('.jsonl')) continue;
+        if (f.startsWith('hear-') || f.startsWith('voice-')) continue;
+        const target = path.join(MEMORY_DIR, 'hear-' + f);
+        if (!fs.existsSync(target)) fs.renameSync(path.join(MEMORY_DIR, f), target);
+      }
+    } catch {}
+  }
+
+  read(area, bridgeName) {
+    this.migrateAll();
+    const dir = MEMORY_DIR;
+    if (!fs.existsSync(dir)) return [];
+    const wanted = bridgeName ? [this.fileFor(bridgeName, area)] : fs.readdirSync(dir)
+      .filter((f) => f.startsWith(`${area}-`) && f.endsWith('.jsonl'))
+      .map((f) => path.join(dir, f));
+    const rows = [];
+    for (const file of wanted) {
+      let text = '';
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      const fallback = path.basename(file).replace(/^w+-/, '').replace(/\.jsonl$/, '');
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const row = JSON.parse(line);
+          rows.push({ ...row, bridge: row.bridge || fallback });
+        } catch {}
+      }
+    }
+    return rows;
+  }
+
+  write(area, bridgeName, entry) {
     const cfg = this.getConfig().memory || {};
     if (cfg.enabled === false) return;
     mkdirp(MEMORY_DIR);
-    const file = this.fileFor(note.bridgeName);
-    const entry = {
-      ts: Date.parse(note.at) || Date.now(),
-      bridge: note.bridgeName || '',
-      mode: note.mode || '',
-      dur: Number(note.duration) || null,
-      say: clampText(note.answer, 160),
-      tone: clampText(note.extras, 120),
-      timeline: clampText(note.timeline, 120),
-      file: path.basename(String(note.path || '')),
-    };
+    this.migrate(bridgeName, area);
+    const file = this.fileFor(bridgeName, area);
     let lines = [];
     try {
       lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
@@ -1818,64 +1865,69 @@ class HearMemory {
     fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
   }
 
-  recall({ bridge, kind, days, limit } = {}) {
-    const dir = MEMORY_DIR;
-    if (!fs.existsSync(dir)) return [];
+  /** 听感：模型听回来的（别人说的）。 */
+  append(note) {
+    this.write('hear', note.bridgeName, {
+      ts: Date.parse(note.at) || Date.now(),
+      bridge: note.bridgeName || '',
+      mode: note.mode || '',
+      dur: Number(note.duration) || null,
+      say: clampText(note.answer, 160),
+      tone: clampText(note.extras, 120),
+      timeline: clampText(note.timeline, 120),
+      file: path.basename(String(note.path || '')),
+    });
+  }
+
+  /** 语音：鱼鱼自己说出去的话。 */
+  appendVoice({ bridgeName, say, file }) {
+    const text = String(say || '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    this.write('voice', bridgeName, {
+      ts: Date.now(),
+      bridge: bridgeName || '',
+      say: clampText(text, 200),
+      chars: text.length,
+      file: path.basename(String(file || '')),
+    });
+  }
+
+  recall({ area = 'hear', bridge, kind, days, limit } = {}) {
     const cfg = this.getConfig().memory || {};
     const n = Math.min(200, Math.max(1, Number(limit) || Number(cfg.recallDefault) || 20));
     const since = days ? Date.now() - Number(days) * 86400000 : 0;
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith('.jsonl'))
-      .filter((f) => (bridge ? f.startsWith(this.fileFor(bridge).replace(MEMORY_DIR + path.sep, '').replace(/\.jsonl$/, '')) : true));
-    const rows = [];
-    for (const f of files) {
-      const src = f.replace(/\.jsonl$/, '');
-      let text = '';
-      try {
-        text = fs.readFileSync(path.join(dir, f), 'utf8');
-      } catch {
-        continue;
-      }
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const row = JSON.parse(line);
-          if (since && row.ts < since) continue;
-          if (kind && row.mode !== kind) continue;
-          rows.push({ ...row, bridge: row.bridge || src });
-        } catch {}
-      }
-    }
+    let rows = this.read(area, bridge);
+    if (since) rows = rows.filter((row) => row.ts >= since);
+    if (kind) rows = rows.filter((row) => row.mode === kind);
     rows.sort((a, b) => a.ts - b.ts);
     return rows.slice(-n);
   }
 
   stats() {
-    const dir = MEMORY_DIR;
-    if (!fs.existsSync(dir)) return { total: 0, bridges: [] };
-    const bridges = [];
-    let total = 0;
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.jsonl'))) {
-      let count = 0;
-      try {
-        count = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean).length;
-      } catch {}
-      total += count;
-      bridges.push({ name: f.replace(/\.jsonl$/, ''), count });
+    const out = { total: 0, hear: { total: 0, bridges: [] }, voice: { total: 0, bridges: [] } };
+    for (const area of ['hear', 'voice']) {
+      const rows = this.read(area);
+      const byBridge = new Map();
+      for (const row of rows) byBridge.set(row.bridge || '未知', (byBridge.get(row.bridge || '未知') || 0) + 1);
+      out[area].total = rows.length;
+      out[area].bridges = [...byBridge.entries()].map(([name, count]) => ({ name, count }));
+      out.total += rows.length;
     }
-    return { total, bridges };
+    return out;
   }
 
-  clear(bridge) {
-    if (bridge) {
-      const file = this.fileFor(bridge);
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-      return;
-    }
+  clear({ area, bridge } = {}) {
     if (!fs.existsSync(MEMORY_DIR)) return;
-    for (const f of fs.readdirSync(MEMORY_DIR).filter((x) => x.endsWith('.jsonl'))) {
-      fs.unlinkSync(path.join(MEMORY_DIR, f));
+    const areas = area ? [area] : ['hear', 'voice'];
+    for (const a of areas) {
+      if (bridge) {
+        const file = this.fileFor(bridge, a);
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+        continue;
+      }
+      for (const f of fs.readdirSync(MEMORY_DIR).filter((x) => x.startsWith(`${a}-`) && x.endsWith('.jsonl'))) {
+        fs.unlinkSync(path.join(MEMORY_DIR, f));
+      }
     }
   }
 }
@@ -2674,17 +2726,22 @@ export function apply(ctx) {
           // 听感记忆：看看存了多少、最近几条、要不要清。
           if (sub === '/memory' && req.method === 'GET') {
             const url = new URL(req.url, 'http://127.0.0.1');
+            const area = (url.searchParams.get('area') || 'hear').toLowerCase();
             const rows = watcher.memory.recall({
+              area,
               bridge: url.searchParams.get('bridge') || undefined,
               kind: url.searchParams.get('kind') || undefined,
               days: Number(url.searchParams.get('days') || 0) || undefined,
               limit: Number(url.searchParams.get('limit') || 50),
             });
-            return json(res, 200, { ok: true, stats: watcher.memory.stats(), rows, text: rows.map(formatMemoryRow) });
+            return json(res, 200, { ok: true, area, stats: watcher.memory.stats(), rows, text: rows.map(formatMemoryRow) });
           }
           if (sub === '/memory/clear' && req.method === 'POST') {
             const body = await readBody(req).catch(() => ({}));
-            watcher.memory.clear(body?.bridge || '');
+            watcher.memory.clear({
+              area: body?.area ? String(body.area).toLowerCase() : undefined,
+              bridge: body?.bridge || undefined,
+            });
             return json(res, 200, { ok: true, stats: watcher.memory.stats() });
           }
           // 一键对齐：清隐形字符、补默认目录、缺的就建；顺手把写文件那头也指过来。
@@ -2775,15 +2832,16 @@ export function apply(ctx) {
     ctx.effect(() => tools.register({
       name: 'hear_recall',
       description: [
-        '翻听感记忆：以前听过的语音里，说过什么、当时语气怎么样。',
-        '每行一条，带时间、哪条桥、是对话还是素材、内容摘要、语气。按时间从旧到新返回最后几条。',
-        '只在需要回忆时用（比如「我这周是不是有几次声音很低」），不要每轮都翻。',
+        '翻记忆。两个区：area="hear" 是听感（别人说给我听的，带内容、语气、数值），area="voice" 是我自己说出去的话。',
+        '每行一条，带时间、哪条桥、内容摘要、语气。按时间从旧到新返回最后几条。',
+        '只在需要回忆时用（比如「我这周是不是有几次声音很低」「我上次是怎么回他的」），不要每轮都翻。',
       ].join(''),
       parameters: {
         type: 'object',
         properties: {
+          area: { type: 'string', enum: ['hear', 'voice'], description: 'hear=听感记忆（别人说的），voice=语音记忆（我说出去的）；默认 hear' },
           bridge: { type: 'string', description: '只看哪条桥（桥接名字），不填就是全部' },
-          kind: { type: 'string', enum: ['dialog', 'material'], description: '只看对话或只看素材，不填就是全部' },
+          kind: { type: 'string', enum: ['dialog', 'material'], description: '只看对话或只看素材，不填就是全部（只对听感有效）' },
           days: { type: 'number', description: '只看最近几天，不填就是全部' },
           limit: { type: 'number', description: '最多几条，默认 20，上限 200' },
         },
@@ -2795,19 +2853,23 @@ export function apply(ctx) {
       },
       execute: async (args) => {
         try {
+          const area = args.area === 'voice' ? 'voice' : 'hear';
           const rows = watcher.memory.recall({
+            area,
             bridge: args.bridge,
             kind: args.kind,
             days: args.days,
             limit: args.limit,
           });
-          if (!rows.length) return { text: '没有听感记忆。', count: 0 };
-          const lines = rows.map((row) => `- ${formatMemoryRow(row)}`);
-          return { text: lines.join('\n'), count: rows.length };
+          if (!rows.length) {
+            return { text: area === 'voice' ? '没有语音记忆。' : '没有听感记忆。', count: 0 };
+          }
+          const lines = rows.map((row) => '- ' + formatMemoryRow(row));
+          return { text: lines.join('\n'), count: rows.length, area };
         } catch (error) {
-          return { text: `翻记忆失败：${error?.message ?? error}`, count: 0 };
+          return { text: '翻记忆失败：' + (error?.message ?? error), count: 0 };
         }
-      },
+      }
     }));
 
     ctx.effect(() => tools.register({

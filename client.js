@@ -381,6 +381,18 @@ window.__ModuleLoader__.load({
         api('/records?limit=8').then((d) => setRecords(d.records || [])).catch(() => {});
       }, [tab]);
 
+      const loadMemory = useCallback(async () => {
+        try {
+          const [hear, voice] = await Promise.all([
+            api('/memory?area=hear&limit=80'),
+            api('/memory?area=voice&limit=80'),
+          ]);
+          setMemory({ hear, voice });
+        } catch (e) {
+          setBanner(String(e.message));
+        }
+      }, []);
+
       const loadModels = useCallback(async () => {
         try {
           const data = await api('/models');
@@ -411,7 +423,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         if (tab === 'models') loadModels();
-        if (tab === 'memory') api('/memory?limit=80').then(setMemory).catch((e) => setBanner(String(e.message)));
+        if (tab === 'memory') loadMemory();
         if (tab === 'doctor' && !diag) api('/diagnose').then(setDiag).catch((e) => setBanner(String(e.message)));
       }, [tab, diag, loadModels]);
 
@@ -1255,65 +1267,67 @@ window.__ModuleLoader__.load({
               style: { color: job.phase === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' },
             }, job.phase === 'done' ? `下载完成：${job.name}` : job.phase === 'error' ? `下载失败：${job.error || '未知原因'}` : '下载已取消') : null,
           ]) : null,
-          tab === 'memory' ? h('div', { key: 'mem' }, [
-            h('div', { className: 'hear-row', key: 'h', style: { marginBottom: '8px' } }, [
-              h('p', { className: 'hear-hint', key: 'h1', style: { margin: 0, flex: 1 } }, '听感记忆：每听完一条压成一行存下来。它不会自己进上下文，要 agent 用 hear_recall 去翻。'),
-              h('button', {
-                className: 'hear-btn',
-                key: 'r',
-                disabled: Boolean(busy),
-                onClick: () => {
-                  api('/memory?limit=80').then(setMemory).catch((e) => setBanner(String(e.message)));
-                },
-              }, '刷新'),
-              h('button', {
-                className: 'hear-btn danger',
-                key: 'c',
-                disabled: Boolean(busy) || !(memory?.rows || []).length,
-                onClick: async () => {
-                  if (!window.confirm('清空所有听感记忆？这个不能撤销。')) return;
-                  setBusy('memclear');
-                  try {
-                    setMemory(await api('/memory/clear', { method: 'POST', body: JSON.stringify({}) }));
-                    setToast('听感记忆已清空');
-                  } catch (e) {
-                    setBanner(String(e.message));
-                  } finally {
-                    setBusy('');
-                  }
-                },
-              }, busy === 'memclear' ? '清理中…' : '清空'),
-            ]),
-            memory
-              ? h('div', { key: 'stat', className: 'hear-hint', style: { margin: '0 0 8px' } }, `共 ${memory.stats?.total ?? 0} 条${(memory.stats?.bridges || []).length ? `（${(memory.stats.bridges || []).map((b) => `${b.name} ${b.count}`).join('，')}）` : ''}`)
-              : h('div', { key: 'stat', className: 'hear-hint', style: { margin: '0 0 8px' } }, '读取中…'),
-            !(memory?.rows || []).length
-              ? h('p', { key: 'empty', className: 'hear-hint' }, memory ? '还没有记忆。听完一条语音就会有一条。' : '')
-              : h('div', { key: 'list', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-                (() => {
-                  // 同一句话、同样数值的重复条目只留最新的一条
-                  const seen = new Set();
-                  const rows = [];
-                  for (const row of (memory.rows || []).slice().reverse()) {
-                    const k = `${row.bridge}|${row.say}|${row.tone}`;
-                    if (seen.has(k)) continue;
-                    seen.add(k);
-                    rows.push(row);
-                    if (rows.length >= 40) break;
-                  }
-                  return rows.map((row, i) => h('div', {
-                    key: `${row.ts}-${i}`,
-                    className: 'hear-model',
-                    style: { alignItems: 'flex-start' },
-                  }, [
-                    h('div', { key: 'l', style: { flex: 1, minWidth: 0 } }, [
-                      h('div', { key: 't', className: 'hear-hint', style: { fontSize: '11.5px' } }, `${new Date(row.ts).toLocaleString()}｜${row.bridge || '未知'}${row.mode ? `｜${row.mode === 'material' ? '素材' : '对话'}` : ''}${row.dur ? `｜${row.dur} 秒` : ''}`),
-                      h('div', { key: 's', style: { marginTop: '3px', lineHeight: 1.5 } }, row.say || '(没记到内容)'),
-                      row.tone ? h('div', { key: 'o', className: 'hear-hint', style: { marginTop: '2px', fontSize: '11.5px' } }, row.tone) : null,
-                    ]),
-                  ]));
-                })()),
-          ]) : null,
+          tab === 'memory' ? (() => {
+            const section = (area, title, hint) => {
+              const data = memory?.[area];
+              const rows = (data?.rows || []).slice().reverse();
+              const seen = new Set();
+              const uniq = [];
+              for (const row of rows) {
+                const k = `${row.bridge}|${row.say}|${row.tone || ''}`;
+                if (seen.has(k)) continue;
+                seen.add(k);
+                uniq.push(row);
+                if (uniq.length >= 40) break;
+              }
+              return h('div', { key: area, style: { marginBottom: '18px' } }, [
+                h('div', { className: 'hear-row', key: 'h', style: { marginBottom: '6px' } }, [
+                  h('b', { key: 't', style: { flex: 1, fontSize: '14px' } }, `${title}（${data?.rows?.length ?? 0} 条）`),
+                  h('button', {
+                    className: 'hear-btn danger',
+                    key: 'c',
+                    disabled: Boolean(busy) || !(data?.rows || []).length,
+                    onClick: async () => {
+                      if (!window.confirm(`清空${title}？这个不能撤销。`)) return;
+                      setBusy(`clr-${area}`);
+                      try {
+                        await api('/memory/clear', { method: 'POST', body: JSON.stringify({ area }) });
+                        await loadMemory();
+                        setToast(`${title}已清空`);
+                      } catch (e) {
+                        setBanner(String(e.message));
+                      } finally {
+                        setBusy('');
+                      }
+                    },
+                  }, busy === `clr-${area}` ? '清理中…' : '清空'),
+                ]),
+                h('p', { key: 'p', className: 'hear-hint', style: { margin: '0 0 8px' } }, hint),
+                !uniq.length
+                  ? h('p', { key: 'e', className: 'hear-hint' }, memory ? '还没有记录。' : '读取中…')
+                  : h('div', { key: 'l', style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+                    uniq.map((row, i) => h('div', {
+                      key: `${row.ts}-${i}`,
+                      className: 'hear-model',
+                      style: { alignItems: 'flex-start' },
+                    }, [
+                      h('div', { key: 'l', style: { flex: 1, minWidth: 0 } }, [
+                        h('div', { key: 't', className: 'hear-hint', style: { fontSize: '11.5px' } }, `${new Date(row.ts).toLocaleString()}｜${row.bridge || '未知'}${row.mode ? `｜${row.mode === 'material' ? '素材' : '对话'}` : ''}${row.dur ? `｜${row.dur} 秒` : ''}`),
+                        h('div', { key: 's', style: { marginTop: '3px', lineHeight: 1.5 } }, row.say || '(没记到内容)'),
+                        row.tone ? h('div', { key: 'o', className: 'hear-hint', style: { marginTop: '2px', fontSize: '11.5px' } }, row.tone) : null,
+                      ]),
+                    ]))),
+              ]);
+            };
+            return h('div', { key: 'mem' }, [
+              h('div', { className: 'hear-row', key: 'top', style: { marginBottom: '8px' } }, [
+                h('p', { className: 'hear-hint', key: 'p', style: { margin: 0, flex: 1 } }, '两个区分开记：听感是模型听回来的（你或别人说的），语音是她自己说出去的。都不会自动进上下文，要 agent 用 hear_recall 去翻。'),
+                h('button', { className: 'hear-btn', key: 'r', disabled: Boolean(busy), onClick: loadMemory }, '刷新'),
+              ]),
+              section('hear', '听感记忆', '模型听回来的：说了什么、什么语气、语速停顿这些数值。'),
+              section('voice', '语音记忆', '她自己说出去的话：什么时候、哪条桥、说了哪句。'),
+            ]);
+          })() : null,
           tab === 'doctor' ? h('div', { key: 'dr' }, [
             h('div', { className: 'hear-row', key: 'b', style: { marginBottom: '10px' } }, [
               h('button', { className: 'hear-btn primary', key: 'c', disabled: busy === 'diag', onClick: async () => {
