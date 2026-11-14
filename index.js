@@ -2700,7 +2700,7 @@ export function apply(ctx) {
             return json(res, 200, { ok: Boolean(started && !started.needsConfirm), area, status: await ears.status() });
           }
           if (sub === '/models' && req.method === 'GET') {
-            return json(res, 200, { ok: true, models: modelStatus(readConfig()), disk: diskFree(), job: downloadSnapshot() });
+            return json(res, 200, { ok: true, models: modelStatus(readConfig(), { fastUp: fastEars.phase === 'up' }), disk: diskFree(), job: downloadSnapshot() });
           }
           if (sub === '/models/download' && req.method === 'POST') {
             const body = await readBody(req);
@@ -3164,13 +3164,31 @@ function listRecords(limit = 20) {
   }
 }
 
-function modelStatus(cfg) {
+/** ModelScope 缓存里有没有这个模型（快速区的模型是 funasr 自己下的，不在我们目录里）。 */
+function modelscopeCached(modelId) {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (!home) return false;
+    const folder = String(modelId).replace('/', '--');
+    const dir = path.join(home, '.cache', 'modelscope', 'models', folder);
+    if (!fs.existsSync(dir)) return false;
+    // 有 snapshots 就算下过
+    return fs.existsSync(path.join(dir, 'snapshots'));
+  } catch {
+    return false;
+  }
+}
+
+function modelStatus(cfg, extra = {}) {
   return MODELS.map((m) => {
     const check = modelCheck(m, cfg);
+    const engine = (m.requires && m.requires.engine) || null;
+    // 快速区的模型不在我们指定目录里：服务起着，或者 ModelScope 缓存里有，就算装好了。
+    const fastReady = engine === 'fast' && (extra.fastUp || modelscopeCached(m.id));
     return {
       ...m,
       dir: check.dir,
-      installed: check.complete,
+      installed: check.complete || fastReady,
       installedSize: check.exists ? check.sizeText : null,
       current: check.current,
       files: check.files,
