@@ -1020,12 +1020,18 @@ class QqWatcher {
         askGroups.get(bridge).push(question.text);
       }
       for (const [bridge, texts] of askGroups) {
+        const voiceCfg = this.getConfig().voiceReply || {};
+        const useVoice = bridge.replyMode !== 'text' && voiceCfg.enabled !== false;
         for (const text of texts.slice(0, 3)) {
           try {
-            await sendQqText(text, bridge);
+            if (useVoice) await sendQqVoice(text, bridge, voiceCfg);
+            else await sendQqText(text, bridge);
             await new Promise((r) => setTimeout(r, 600));
           } catch (error) {
             logError('reply', error?.message ?? error);
+            try {
+              await sendQqText(text, bridge);
+            } catch {}
             break;
           }
         }
@@ -1046,7 +1052,9 @@ class QqWatcher {
         const cooldown = Number(bridge.cooldownMs ?? fallback.cooldownMs ?? 60000) || 60000;
         if (now - (this.lastReplyByBridge.get(key) || 0) < cooldown) continue;
         const texts = buildReplyTexts(batch, bridge.maxPerBatch ?? fallback.maxPerBatch ?? 1);
-        const channel = 'text';
+        // 渠道看模式：对话（和先问）出声，素材默认文字；桥接上可以强制。
+        const channel = batch.some((note) => replyChannelFor(note.mode, bridge, note.answer) === 'voice') ? 'voice' : 'text';
+        const voiceCfg = this.getConfig().voiceReply || {};
 
         // 首选：把听到的交给桥接，让她自己组织语言回（回复内容和语气都是她的）。
         if (fallback.viaAgent !== false && bridge.send) {
@@ -1082,11 +1090,24 @@ class QqWatcher {
         const sent = [];
         for (const text of texts) {
           try {
-            await sendQqText(text, bridge);
+            if (channel === 'voice' && voiceCfg.enabled !== false) {
+              await sendQqVoice(text, bridge, voiceCfg);
+            } else {
+              await sendQqText(text, bridge);
+            }
             sent.push(text);
             await new Promise((r) => setTimeout(r, 800));
           } catch (error) {
             logError('reply', error?.message ?? error);
+            // 语音这条挂了就退回文字，别让对方啥也收不到。
+            if (channel === 'voice') {
+              try {
+                await sendQqText(`${text}（语音没发出去）`, bridge);
+                sent.push(text);
+              } catch (fallbackError) {
+                logError('reply', fallbackError?.message ?? fallbackError);
+              }
+            }
             break;
           }
         }
@@ -2299,6 +2320,15 @@ function resolveMode(cfg, durationS, answer, question) {
   return { mode, note };
 }
 
+/** 这段该用语音回还是用文字回：对话和先问都出声，素材默认文字。 */
+function replyChannelFor(mode, bridge, text) {
+  const forced = String(bridge?.replyMode || 'auto');
+  if (forced === 'voice') return 'voice';
+  if (forced === 'text') return 'text';
+  if (/用语音回|语音回我|说给我听|用声音回/.test(String(text || ''))) return 'voice';
+  return mode === 'material' ? 'text' : 'voice';
+}
+
 function splitAudio(file, seconds = 60) {
   const cfg = readConfig();
   const outDir = path.join(os.tmpdir(), `dsh-hear-split-${Date.now()}`);
@@ -2928,7 +2958,7 @@ export function apply(ctx) {
         const decided = resolveMode(cfg, duration, result.answer, args.question);
         const finalMode = decided.mode;
         const finalNote = decided.note;
-        const finalChannel = 'text';
+        const finalChannel = replyChannelFor(finalMode, null, args.question);
 
         const record = {
           at: new Date().toISOString(),
