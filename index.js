@@ -1171,7 +1171,7 @@ class QqWatcher {
         seen.add(key);
         const when = new Date(row.ts);
         const hhmm = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
-        lines.push(`- ${hhmm}｜【${row.bridge || '未知'}】${say.slice(0, 80)}${row.tone ? `｜${String(row.tone).slice(0, 40)}` : ''}`);
+        lines.push(`- ${hhmm}｜【${row.bridge || '未知'}】${say.slice(0, 100)}`);
         if (lines.length >= 3) break;
       }
       if (lines.length) {
