@@ -981,24 +981,45 @@ class QqWatcher {
           continue;
         }
         try {
-          // 快速对话区：小模型 + 本机数值。日常走这里，秒级，不叫大模型。
-          const fastSvc = this.getFast();
-          const fastCfg = this.getConfig().fast || {};
-          let fastNote = null;
-          if (fastSvc && fastCfg.enabled !== false) {
-            try {
-              const grew = await fastSvc.listen(item.file);
-              fastNote = buildFastNote(grew, this.getConfig(), duration);
-            } catch (error) {
-              this.lastError = `快速对话区没听成：${error?.message ?? error}`;
-              logError('fast', this.lastError);
-            }
-          }
+          // 两个区二选一：快速区只用小模型，理解区只用大模型，互不替补。
+          const area = String(this.getConfig().area || 'understand').toLowerCase();
+          const useFast = area === 'fast';
+          const cfgPrompt = String(this.getConfig().prompt || '').trim()
+            || '用你自己的话说说你听到了什么：这段话大概讲了什么事，具体概括一下；语气怎么样、语速停顿、背景有没有声音。就当你刚听完，跟人描述一下。听不出来的就不要说，不要编造你没听到的内容。';
 
-          // 快速区听不了，或者这条是素材（有音乐/没人说话），才叫理解区的大模型。
-          if (!fastNote || fastNote.wantDetail) {
-            const cfgPrompt = String(this.getConfig().prompt || '').trim()
-              || '用你自己的话说说你听到了什么：这段话大概讲了什么事，具体概括一下；语气怎么样、语速停顿、背景有没有声音。就当你刚听完，跟人描述一下。听不出来的就不要说，不要编造你没听到的内容。';
+          if (useFast) {
+            const fastSvc = this.getFast();
+            const fastCfg = this.getConfig().fast || {};
+            let fastNote = null;
+            if (fastSvc && fastCfg.enabled !== false) {
+              try {
+                const grew = await fastSvc.listen(item.file);
+                fastNote = buildFastNote(grew, this.getConfig(), duration);
+              } catch (error) {
+                this.lastError = `快速区没听成：${error?.message ?? error}`;
+                logError('fast', this.lastError);
+              }
+            }
+            if (fastNote) {
+              notes.push({
+                at: new Date().toISOString(),
+                path: item.file,
+                bridge: item.bridge,
+                mode: fastNote.mode,
+                modeNote: fastNote.modeNote,
+                answer: fastNote.answer,
+                extras: fastNote.extras,
+                timeline: '',
+              });
+            } else {
+              notes.push({
+                at: new Date().toISOString(),
+                path: item.file,
+                bridge: item.bridge,
+                error: '快速区没听成（服务没起来或没返回）',
+              });
+            }
+          } else {
             const heard = await this.getEars().hear(item.file, cfgPrompt);
             const parsed = parseAnswer(heard.answer);
             const decided = resolveMode(this.getConfig(), duration, parsed.answer, '');
@@ -1009,17 +1030,6 @@ class QqWatcher {
               mode: decided.mode,
               modeNote: decided.note,
               ...parsed,
-            });
-          } else {
-            notes.push({
-              at: new Date().toISOString(),
-              path: item.file,
-              bridge: item.bridge,
-              mode: fastNote.mode,
-              modeNote: fastNote.modeNote,
-              answer: fastNote.answer,
-              extras: fastNote.extras,
-              timeline: '',
             });
           }
         } catch (error) {
@@ -2670,6 +2680,24 @@ export function apply(ctx) {
           if (sub === '/repair' && req.method === 'POST') {
             const body = await readBody(req);
             return json(res, 200, { ok: true, ...(await repairChecks(ears, body?.ids)) });
+          }
+          // 快速区 / 理解区 二选一：切过去就把另一个停掉，别让两边同时吃显存。
+          if (sub === '/area' && req.method === 'POST') {
+            const body = await readBody(req).catch(() => ({}));
+            const area = String(body?.area || '').toLowerCase();
+            if (area !== 'fast' && area !== 'understand') {
+              return json(res, 400, { ok: false, error: 'area 只能是 fast 或 understand' });
+            }
+            writeConfig({ area });
+            if (area === 'fast') {
+              try { await ears.stop(); } catch {}
+              fastEars.stop();
+              const ok = await fastEars.start();
+              return json(res, 200, { ok, area, fast: await fastEars.status() });
+            }
+            fastEars.stop();
+            const started = await ears.start();
+            return json(res, 200, { ok: Boolean(started && !started.needsConfirm), area, status: await ears.status() });
           }
           if (sub === '/models' && req.method === 'GET') {
             return json(res, 200, { ok: true, models: modelStatus(readConfig()), disk: diskFree(), job: downloadSnapshot() });

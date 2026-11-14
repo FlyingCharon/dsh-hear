@@ -668,6 +668,21 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const switchArea = async (area) => {
+        setBusy('area');
+        try {
+          const r = await api('/area', { method: 'POST', body: JSON.stringify({ area }) });
+          if (r && r.ok === false) setBanner(r.error || '切换失败');
+          else setToast(area === 'fast' ? '已切到快速区' : '已切到理解区');
+          await refresh();
+          if (tab === 'models') await loadModels();
+        } catch (e) {
+          setBanner(String(e.message));
+        } finally {
+          setBusy('');
+        }
+      };
+
       const selectModel = async (m) => {
         if (!m.dir || !m.installed) {
           setBanner(`${m.name} 还没装好，先下载`);
@@ -1108,6 +1123,22 @@ window.__ModuleLoader__.load({
             h('div', { className: 'hear-row', key: 'h', style: { marginBottom: '4px' } }, [
               h('p', { className: 'hear-hint', key: 'h1', style: { margin: 0, flex: 1 } }, t('tabModelsHint')),
               disk ? h('span', { className: 'hear-hint', key: 'h2' }, `磁盘剩余 ${fmtBytes(disk.freeBytes)} / 共 ${fmtBytes(disk.totalBytes)}`) : null,
+            ]),
+            h('div', { className: 'hear-row', key: 'area', style: { margin: '0 0 10px' } }, [
+              h('span', { key: 'l', style: { fontSize: '12.5px' } }, '当前用哪个区：'),
+              h('button', {
+                className: (config?.area || 'understand') === 'fast' ? 'hear-btn primary' : 'hear-btn',
+                key: 'f',
+                disabled: Boolean(busy),
+                onClick: () => switchArea('fast'),
+              }, (config?.area || 'understand') === 'fast' ? '快速区（在用）' : '快速区'),
+              h('button', {
+                className: (config?.area || 'understand') === 'understand' ? 'hear-btn primary' : 'hear-btn',
+                key: 'u',
+                disabled: Boolean(busy),
+                onClick: () => switchArea('understand'),
+              }, (config?.area || 'understand') === 'understand' ? '理解区（在用）' : '理解区'),
+              h('span', { className: 'hear-hint', key: 'h' }, '二选一：切过去会把另一个停掉，不会同时占显存'),
             ]),
             h('p', { className: 'hear-hint', key: 'rec', style: { margin: '0 0 8px' } }, `按你这张显卡（${gpuGb == null ? '未识别' : gpuGb + 'G'}）建议：${recommend}`),
             h('div', { key: 'cloud', style: { margin: '4px 0 10px' } }, [
