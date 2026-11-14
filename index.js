@@ -344,6 +344,38 @@ function describeProc(pid) {
   }
 }
 
+/** 取一个进程的父进程号；拿不到就是 0。 */
+function pidParentOf(pid) {
+  if (!pid) return 0;
+  try {
+    const cmd = `Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}" | Select-Object -First 1 ParentProcessId | ConvertTo-Json -Compress`;
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+    });
+    const info = JSON.parse(String(out || '').trim() || 'null');
+    return Number(info && info.ParentProcessId || 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 端口上这个进程，是不是我们自己拉起来的。
+ * spawn 返回的是 venv 的 python，真正 listen 的常是它的子进程，所以不能只看 pid 相等。
+ */
+function pidBelongsTo(pid, rootPid) {
+  if (!pid || !rootPid) return false;
+  let cur = Number(pid);
+  const root = Number(rootPid);
+  for (let i = 0; i < 6 && cur; i += 1) {
+    if (cur === root) return true;
+    cur = pidParentOf(cur);
+  }
+  return false;
+}
+
 /** 是不是耳朵自己上次没退干净的那一份。 */
 function looksLikeHear(info) {
   if (!info) return false;
@@ -1287,7 +1319,9 @@ function zombieNotice(cfg = readConfig(), ownedPid = 0, phase = '') {
     return zombieCache.value;
   }
   const pid = pidOnPort(port);
-  const suspect = Boolean(pid) && pid !== Number(ownedPid || 0) && phase !== 'awake';
+  const busyStarting = phase === 'starting' || phase === 'loading';
+  const mine = pidBelongsTo(pid, ownedPid);
+  const suspect = Boolean(pid) && !mine && !busyStarting && phase !== 'awake';
   if (!suspect) {
     zombieCache = { at: now, port, value: null, pid: 0, firstSeen: 0 };
     return null;
@@ -2576,7 +2610,7 @@ export function apply(ctx) {
               name: info ? info.name : '',
               cmdline: info ? info.cmdline : '',
               owned: Boolean(pid) && pid === ours,
-              zombie: Boolean(pid) && pid !== ours && looksLikeHear(info),
+              zombie: Boolean(pid) && !pidBelongsTo(pid, ours) && looksLikeHear(info),
               suggestion: pid ? await pickFreePort(port + 1) : port,
             });
           }
