@@ -1969,8 +1969,7 @@ function clampText(value, max) {
 }
 
 /**
- * 把快速对话区的结果拼成一条「听感」：内容是事实（转写），语气和数值分开写，
- * 哪部分是推测、哪部分是量出来的，一眼能分清。
+ * 把快速对话区的结果拼成一条「听感」：先说内容，再补语气和几个具体的数（语速、音量、停顿、音高）。
  */
 function buildFastNote(fast, cfg, duration) {
   const text = String(fast?.text || '').replace(/\s+/g, ' ').trim();
@@ -1991,7 +1990,7 @@ function buildFastNote(fast, cfg, duration) {
 
   const bits = [];
   if (fast?.emotionHint && fast.emotionHint !== '中性' && fast.emotionHint !== '不确定') {
-    bits.push(`情绪（模型粗判）：${fast.emotionHint}`);
+    bits.push(`情绪：${fast.emotionHint}`);
   }
   if (events.length) bits.push(`听到：${events.join('、')}`);
   const nums = [];
@@ -2003,7 +2002,7 @@ function buildFastNote(fast, cfg, duration) {
     nums.push(`音高中位数 ${facts.f0Median} Hz${range}`);
   }
   if (seconds) nums.push(`时长 ${seconds} 秒`);
-  if (nums.length) bits.push(`量出来的：${nums.join('，')}`);
+  if (nums.length) bits.push(nums.join('，'));
 
   const decided = resolveMode(cfg, seconds, answer, '');
   const mode = hasMusic ? 'material' : decided.mode;
