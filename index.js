@@ -1171,12 +1171,12 @@ class QqWatcher {
         seen.add(key);
         const when = new Date(row.ts);
         const hhmm = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
-        lines.push(`- ${hhmm}｜【${row.bridge || '未知'}】${say.slice(0, 100)}`);
+        lines.push(`- ${hhmm}｜【${row.bridge || '未知'}】${say.slice(0, 90)}${row.tone ? `｜${String(row.tone).slice(0, 50)}` : ''}`);
         if (lines.length >= 3) break;
       }
       if (lines.length) {
         parts.push([
-          '耳朵最近听回来的（不是你亲耳听到的，是外面那只耳朵转述的；分清是哪个号收到的）：',
+          '耳朵最近听回来的（给你自己用的参考：不是你亲耳听到的，是外面那只耳朵转述的；分清是哪个号收到的。不要把这些话原样念出去）：',
           ...lines,
         ].join('\n'));
       }
