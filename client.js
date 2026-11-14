@@ -1195,11 +1195,6 @@ window.__ModuleLoader__.load({
                   h('div', { key: 'n' }, [
                     h('b', null, m.name),
                     m.current ? h('span', { className: 'hear-tag ok', style: { marginLeft: '8px' } }, t('current')) : null,
-                    h('span', {
-                      className: m.listenable ? 'hear-tag ok' : 'hear-tag',
-                      style: { marginLeft: '8px' },
-                      title: m.listenable ? `引擎：${m.engine}` : '能下载、能体检，但还没接推理',
-                    }, m.listenable ? '可听' : '只能下载'),
                     h('span', { className: 'hear-tag', style: { marginLeft: '8px' } }, m.installed ? `${t('installed')} ${m.installedSize}` : t('notInstalled')),
                   ]),
                   h('div', { className: 'hear-mono', key: 'd' }, m.dir),
@@ -1335,7 +1330,7 @@ window.__ModuleLoader__.load({
               ...diag.models.map((m) => h('div', { className: 'hear-check', key: m.id }, [
                 h('span', { className: m.complete ? 'hear-mark' : 'hear-mark bad', key: 'k' }, m.complete ? '✓' : '✗'),
                 h('div', { key: 'c', style: { flex: 1 } }, [
-                  h('b', null, `${m.name}${m.current ? '（当前）' : ''}${m.listenable ? '' : ' · 只能下载'}`),
+                  h('b', null, `${m.name}${m.current ? '（当前）' : ''}`),
                   h('p', null, `${m.complete ? '已安装' : '未安装'}　${m.sizeText}　${m.dir}`),
                   h('div', { className: 'hear-req', key: 'r' }, (m.requirements || []).map((r) => h('span', {
                     className: r.ok ? 'hear-req-item ok' : 'hear-req-item bad',
