@@ -23,3 +23,7 @@ anim/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 临时排查脚本 / 抓取的清单，不进仓库
+find-token.mjs
+market.json
