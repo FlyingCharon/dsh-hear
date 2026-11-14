@@ -1084,17 +1084,6 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'hear-hint', key: 'h' }, '一条管一个号，各自听各自的，先保存再试'),
               ]),
             ]), '多开几个 QQ 就多加几条，互不打架'),
-            field('谁来回', h('div', null, [
-              h('div', { className: 'hear-row', key: 'v1' }, [
-                h('button', {
-                  className: 'hear-btn',
-                  key: 'agent',
-                  title: '把听到的交给 QQ 桥接，让她自己组织语言回',
-                  onClick: () => setDraft({ ...draft, reply: { ...(draft.reply || {}), viaAgent: draft.reply?.viaAgent === false } }),
-                }, draft.reply?.viaAgent === false ? '交给 agent 回：关' : '交给 agent 回：开'),
-                h('span', { className: 'hear-hint', key: 'h2' }, '开着：插件把听到的注入桥接，由她自己组织回复；关掉：插件只记下听感，不代她说话。'),
-              ]),
-            ]), '插件不再自己合成语音，说话交给 agent'),
             field('冷却', slider(Math.round((draft.reply?.cooldownMs || 60000) / 1000), 10, 600, 10, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), cooldownMs: v * 1000 } }), `${Math.round((draft.reply?.cooldownMs || 60000) / 1000)} 秒`)),
             field('每批最多几条', slider(Number(draft.reply?.maxPerBatch ?? 1), 0, 10, 1, (v) => setDraft({ ...draft, reply: { ...(draft.reply || {}), maxPerBatch: v } }), `${Number(draft.reply?.maxPerBatch ?? 1)} 条`), '0 表示不主动发，你一口气发几段最多回几条'),
             field(t('vramPrio'), select(draft.vramPriority === 'indextts' ? 'voice' : draft.vramPriority, [['voice', t('prioVoice')], ['last', t('prioLast')]], (v) => setDraft({ ...draft, vramPriority: v }))),
