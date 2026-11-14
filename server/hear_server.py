@@ -329,7 +329,7 @@ async def hear(req: Request):
 
     body = await req.json()
     path = body.get("path")
-    question = body.get("question") or "用你自己的话说说你听到了什么：这段话大概讲了什么事，具体概括一下；语气怎么样、语速停顿、背景有没有声音。就当你刚听完，跟人描述一下。"
+    question = body.get("question") or "用你自己的话说说你听到了什么：这段话大概讲了什么事，具体概括一下；语气怎么样、语速停顿、背景有没有声音。就当你刚听完，跟人描述一下。听不出来的就不要说，不要编造你没听到的内容。"
     if not path or not os.path.exists(path):
         return JSONResponse({"ok": False, "error": f"no such file: {path}"}, status_code=400)
 
