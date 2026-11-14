@@ -3113,6 +3113,8 @@ function modelStatus(cfg) {
       current: check.current,
       files: check.files,
       complete: check.complete,
+      engine: (m.requires && m.requires.engine) || null,
+      listenable: Boolean(m.requires && m.requires.engine),
     };
   });
 }
