@@ -72,7 +72,7 @@ const MODELS = [
     area: 'fast',
     size: '约 230M',
     vram: '几乎不占显存，CPU 也能跑',
-    note: '转写 + 声音事件（音乐/笑声/掌声），秒级；日常每条语音走这里',
+    note: '转写 + 声音事件（音乐/笑声/掌声），秒级',
     dir: 'sensevoice-small',
     requires: { modules: ['funasr', 'modelscope', 'soundfile', 'librosa'], bitsandbytes: false, trustRemoteCode: false, vram: 1, engine: 'fast' },
   },
