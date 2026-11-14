@@ -211,7 +211,13 @@ def ask_qwen2audio(model, processor, path, audio, question):
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=256, do_sample=False)
     gen = out[:, inputs["input_ids"].shape[1]:]
-    return processor.batch_decode(gen, skip_special_tokens=True)[0].strip()
+    text_out = processor.batch_decode(gen, skip_special_tokens=True)[0].strip()
+    del inputs, out, gen
+    try:
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    return text_out
 
 
 def ask_qwen2omni(model, processor, path, audio, question):
@@ -240,17 +246,34 @@ def ask_qwen2omni(model, processor, path, audio, question):
         use_audio_in_video=False,
     )
     inputs = inputs.to(model.device).to(model.dtype)
+    # Omni 默认还会生成语音（talker），那一步在 12G 卡上直接把显存吃穿。
+    # 我们只要文字：用 modalities=["text"] 跳过 talker（不要 disable_talker，
+    # 那会把 talker 模块整个摘掉，generate 反而报错）。
+    try:
+        max_new = int(os.environ.get("HEAR_MAX_NEW") or "160")
+    except ValueError:
+        max_new = 160
+    gen_kwargs = {
+        "use_audio_in_video": False,
+        "generation_mode": "text",
+        "thinker_max_new_tokens": max_new,
+    }
     with torch.no_grad():
-        ids = model.generate(
-            **inputs,
-            use_audio_in_video=False,
-            max_new_tokens=256,
-            do_sample=False,
-        )
+        try:
+            ids = model.generate(**inputs, **gen_kwargs)
+        except TypeError:
+            ids = model.generate(**inputs, use_audio_in_video=False, max_new_tokens=max_new, do_sample=False)
     if isinstance(ids, tuple):
         ids = ids[0]
     prompt_len = inputs["input_ids"].shape[1] if "input_ids" in inputs else 0
-    return processor.batch_decode(ids[:, prompt_len:], skip_special_tokens=True)[0].strip()
+    text_out = processor.batch_decode(ids[:, prompt_len:], skip_special_tokens=True)[0].strip()
+    # 及时把这一轮的张量放掉
+    del inputs, ids
+    try:
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    return text_out
 
 
 def ask_minicpm(model, processor, path, audio, question):
